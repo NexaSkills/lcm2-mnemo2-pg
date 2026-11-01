@@ -1,6 +1,10 @@
 # lcm2-mnemo2-redesign — Phase 0 Recon Spec (reverse-engineering inventory + PG mapping)
 
 Slug: lcm2-mnemo2-redesign · Phase: 0 · Worker: mike · Date: 2026-11-01 (SAST)
+AMENDMENT 2026-11-01: applies QA findings F1–F7 (tessa verdict PARTIAL,
+fleet/reports/lcm2-mnemo2-redesign.phase0.qa.md). All corrected numbers below were
+re-measured against the pinned §0 commits before writing; markers "RETRACTED"/
+"CORRECTION (QAn)" identify each changed claim.
 Plan (binding): /home/mybuddy/fleet/plans/lcm2-mnemo2-redesign.plan.md
 Method: Superpowers (obra/superpowers v7.0.1 @ 2ce8aa15 loaded on mike's profile via
 `skills.external_dirs`; plan-first, spec-before-code). No code written this phase.
@@ -13,7 +17,7 @@ All vendor/fork/plugin dirs accessed READ-ONLY.
 | Vendor hermes-lcm (github.com/stephenschoettler/hermes-lcm) | /home/mybuddy/lcm-upstream (pre-existing clean clone, pulled) | a13e709c2547 2026-10-17 "flatten lcm_compile_evidence (#624)" |
 | Vendor mnemosyne (github.com/mnemosyne-oss/mnemosyne) | /home/mybuddy/lcm2-recon/mnemosyne (fresh clone, depth 50) | d34b5df79f40 2026-10-31 "Merge PR #1297 embed-query-backend-race" |
 | Our fork lcm-pg (github.com/NexaSkills/lcm-pg) | /home/mybuddy/lcm2-recon/lcm-pg (fresh clone; ~/.hermes/forks/lcm-pg untouched) | 3313b15281ea 2026-10-30 "factory._pg_dsn: widen resolution" |
-| Our plugin mnemo-pg | /home/mybuddy/.hermes/plugins/mnemo-pg (existing install, read-only) | version "0.7.4-mnemo-pg" (plugin.yaml) |
+| Our plugin mnemo-pg | /home/mybuddy/.hermes/plugins/mnemo-pg (existing install, read-only) | version "0.7.4-mnemo-pg" (plugin/plugin.yaml — path corrected per QA E19) |
 | Superpowers (github.com/obra/superpowers) | /home/mybuddy/lcm2-recon/superpowers (fresh clone, depth 1) | 2ce8aa15d05b 2026-10-21 "Release v7.0.1" |
 
 Code volume: hermes-lcm 181 .py files; mnemosyne 505 .py files (core ~70 modules in
@@ -65,9 +69,12 @@ message-forwarding capability check).
   (`_SUPPORTED_LCM_CONFIG_YAML_KEYS = {"context_threshold"}`; other keys reported
   ignored); fallback chain → `compression.threshold` (unless compression disabled) →
   default. Env `LCM_CONTEXT_THRESHOLD` wins over yaml.
-- Env vars: 218 distinct `LCM_*` constants extracted from source (count verified by
-  grep). Families (name prefixes; full verbatim list reproducible with the command in
-  A6): context/tokens (LCM_CONTEXT_THRESHOLD, LCM_MAX_ASSEMBLY_TOKENS,
+- Env vars: **175 distinct `LCM_*` names over all `.py` files** (`grep -rhoE
+  "LCM_[A-Z0-9_]+" . --include='*.py' | sort -u` = 175; 174 excluding tests/; the
+  top-level-only command in the old §Reproducibility yields 170 and the word-bounded
+  form 120 — earlier draft's "218" reproduced none of these scopes and is
+  RETRACTED per QA F1). Families (name prefixes; full verbatim list reproducible
+  with the scoped command above): context/tokens (LCM_CONTEXT_THRESHOLD, LCM_MAX_ASSEMBLY_TOKENS,
   LCM_RESERVE_TOKENS_FLOOR, LCM_L2_BUDGET_RATIO, LCM_L3_TRUNCATE_TOKENS,
   LCM_FRESH_TAIL_COUNT/-MAX_TOKENS, LCM_LEAF_CHUNK_TOKENS, LCM_DYNAMIC_LEAF_CHUNK_*,
   LCM_NEW_SESSION_RETAIN_DEPTH, LCM_INCREMENTAL_MAX_DEPTH, LCM_CONDENSATION_FANIN,
@@ -99,24 +106,43 @@ message-forwarding capability check).
   `hermes [-p p] config get/set/unset`. DB binding replaces LCM_DATABASE_PATH entirely
   (no per-profile file exists).
 
-## A4. DB tables (vendor; 40 found by grep of CREATE TABLE in non-test source)
+## A4. DB tables (vendor; **49 distinct names from `CREATE TABLE` across all `.py`** —
+37 defined in non-test source + 12 test-only names (10 plain CREATE TABLE fixtures:
+conversations, sessions, summaries, summary_messages, summary_parents, message_parts,
+legacy, lcm_querycache, lcm_future_widgets, lcm_assertion_future_state, plus the
+messages_fts/nodes_fts names, which are CREATE VIRTUAL TABLE in tests/test_lcm_core.py
+and CREATE TABLE'd nowhere in non-test source; per QA F2, 2026-11-01 amendment).
+Corrections to the earlier draft: the "40 in non-test source" count is RETRACTED, and
+the 5 query-corpus/query-view tables + 10 lcm_trajectory_* tables were already itemized
+and are real (trajectory_store.py, query_view_store.py) — the genuinely missing source
+tables are lcm_imported_messages + lcm_imported_summaries (scripts/
+import_lossless_claw.py).
 
 Core: messages, metadata, summary_nodes, lcm_lifecycle_state, lcm_migration_state.
 FTS (virtual): messages_fts, nodes_fts (fts5; external-content tables per
 ExternalContentFtsSpec — auto-sync via sqlite 'delete'/'insert' trigger shim).
 Embeddings (lazy, `embeddings_v1` marker, SCHEMA_VERSION=5 core ladder):
-lcm_embedding_meta, lcm_embedding_vectors (vec0), lcm_embedding_binary,
+lcm_embedding_meta, lcm_embedding_vectors (plain BLOB table, db_bootstrap.py:1354 —
+NOT vec0, see A5 correction), lcm_embedding_binary,
 lcm_embedding_profile, lcm_embedding_backfill_inflight; chunk twins: lcm_chunk_meta,
 lcm_chunk_binary, lcm_chunk_vectors.
 Assertions: lcm_assertions, lcm_assertion_sources, lcm_assertion_relations.
 Rollups: lcm_rollups, lcm_rollup_sources, lcm_rollup_state, lcm_rollup_invalidations
 (+ I/U/D triggers on summary_nodes feeding invalidations — AFTER INSERT/UPDATE OF
 session_id). Query views: lcm_query_views, lcm_query_view_sources,
-lcm_query_view_versions, lcm_query_corpus_events, lcm_query_corpus_state.
-Trajectory: lcm_trajectory_assets, lcm_trajectory_corpora, lcm_trajectory_embeddings,
+lcm_query_view_versions, lcm_query_corpus_events, lcm_query_corpus_state (all five
+CREATE TABLE'd in query_view_store.py). Trajectory: lcm_trajectory_assets,
+lcm_trajectory_corpora, lcm_trajectory_embeddings,
 lcm_trajectory_embedding_profiles, lcm_trajectory_sources, lcm_trajectory_states,
 lcm_trajectory_state_embeddings, lcm_trajectory_state_embedding_profiles,
-lcm_trajectory_transitions, lcm_trajectory_ingest_receipts.
+lcm_trajectory_transitions, lcm_trajectory_ingest_receipts (all ten CREATE TABLE'd in
+trajectory_store.py). Import scripts: lcm_imported_messages, lcm_imported_summaries
+(scripts/import_lossless_claw.py).
+**Wildcard carry-over rule (binding for R4/R3 test generation, per QA F2):** the
+enumeration above is documentary; authoritative table set for parity tests =
+`grep -rhoE "CREATE TABLE( IF NOT EXISTS)? [a-zA-Z_]+" <src> --include='*.py'
+--exclude-dir=tests --exclude-dir=__pycache__ | awk '{print $NF}' | sort -u` run
+against the pinned vendor commit, NOT this itemized list.
 
 **lcm2db/lcm2_<agent> mapping:** 1:1 table carry-over (same names; schema-qualified),
 with native-PG type shapes: store_id rowid → BIGINT GENERATED ALWAYS AS IDENTITY
@@ -131,14 +157,27 @@ schema_version semantics kept. NO shared schema in lcm2db (plan §2).
 
 ## A5. sqlite mechanisms in vendor source (the "why we can't wrap it" list)
 
-Verified by grep (import sqlite3 in 17+ core modules; PRAGMA inventory):
-- PRAGMA set: busy_timeout(30s), journal_mode(WAL), synchronous, journal_size_limit,
-  mmap_size, wal_autocheckpoint, wal_checkpoint, foreign_keys, query_only,
-  integrity_check, quick_check, table_info, index_list/index_info/index_xinfo,
-  database_list (store.py, db_bootstrap.py, sqlite_util.py, maintenance.py, etc.)
+Verified by grep: `import sqlite3` in **24 non-test files** (52 repo-wide incl.
+tests; the earlier "17+ core modules" understated, per QA F7); 22 distinct PRAGMA
+names. The 6 omitted by the original list: `foreign_key_check`, `is`,
+`schema_version`, `settings`, `user_version`, `verification` — note `is` is a
+false-positive from the sentence "…the pragma is a plain read…" (db_bootstrap.py:150)
+and `settings`/`verification` occur only in comments; executed-form additions are
+foreign_key_check, schema_version, user_version.
+- PRAGMA set (executed forms): busy_timeout(30s), journal_mode(WAL), synchronous,
+  journal_size_limit, mmap_size, wal_autocheckpoint, wal_checkpoint, foreign_keys,
+  foreign_key_check, query_only, integrity_check, quick_check, table_info,
+  index_list/index_info/index_xinfo, database_list, schema_version, user_version
+  (store.py, db_bootstrap.py, sqlite_util.py, maintenance.py, etc.); the remaining
+  distinct-name matches in the 22-name set (`is`, `settings`, `verification`) are
+  comment/prose occurrences, not executed PRAGMAs (verified by grep).
 - FTS5 virtual tables with external-content + sync triggers; bm25() ranking;
   snippet()/pickle; MATCH query language (search_query.py escapes/normalizes)
-- vec0 virtual table + sqlite_vec extension (knn_search), binary prescreen tables
+- CORRECTION (QA F4, RETRACTED claim): hermes-lcm uses NO vec0/sqlite_vec/
+  knn_search — 0 hits repo-wide; lcm_embedding_vectors is a plain BLOB table
+  (db_bootstrap.py:1354) with a separate binary-prescreen table. The
+  binary-prescreen-in-plain-tables mechanism is what carries over (pgvector +
+  bit/hamming arm in lcm2-pg design).
 - rowid AUTOINCREMENT identity + `store_id` cursor pagination; `_rowid_` joins
 - ATTACH-free single-file DB per profile (HERMES_HOME/lcm.db), 0700 dir / 0600 file
   hygiene (store.py _prepare_private_sqlite_storage), :memory: special-case
@@ -148,7 +187,8 @@ Verified by grep (import sqlite3 in 17+ core modules; PRAGMA inventory):
   threading-local connections + lru_cache on bootstrap.
 **PG replacements (design, Phase-2 spec materializes):** psycopg3 pool replaces
 thread-local connections (LCM_PG_POOL_* params proven in our fork); lock contention via
-MVCC + lock_timeout instead of busy_timeout retry; FTS5→tsvector/GIN; vec0→pgvector;
+MVCC + lock_timeout instead of busy_timeout retry; FTS5→tsvector/GIN; BLOB-table
+embeddings→pgvector (no vec0 existed in the vendor, see correction above);
 rowid→IDENTITY; PRAGMA introspection→information_schema/pg_catalog (our fork already
 built native_introspect.py — proven pattern); integrity_check→amcheck-or-explicit
 checks in lcm_doctor; WAL checkpoint maintenance → autovacuum/no-op; :memory: tests →
@@ -225,10 +265,14 @@ Two vendor manifests exist (both inventoried; plugin.yaml files verified by cat)
 | 39 | mnemosyne_recall_diagnostics | Per-tier recall hit/fallback counters | counters table in schema |
 | 40 | mnemosyne_resolve_conflicts | Global-scope contradiction resolution: stale copy superseded (needs CROSS_SESSION_CONFLICT_RESOLUTION=1) | pair-key conflicts table + supersede update |
 
-(Note: 36-40 exist as live tools in this session's tool surface and are defined in the
-vendor repo tool_schemas/mcp_tools + provider code; tool-count difference vs the 34-item
-4.0.0 manifest is the media/persona/model/task/progress extensions — Phase 2 implements
-the union observed in THIS session's live surface, verified against vendor source.)
+(Note: 36-40 exist as live tools in this session's tool surface. Definitions now
+cited by file:line (QA F6): integrations/hermes/src/mnemosyne_hermes/tools.py:148
+mnemosyne_shared_stats, :183 mnemosyne_resolve_conflicts, :483 mnemosyne_model_card,
+:507 mnemosyne_model_refresh, :706 mnemosyne_recall_diagnostics, :726
+mnemosyne_task_progress. shared_stats also appears in the 34-tool
+hermes_memory_provider/plugin.yaml manifest; 36-40 are defined in the hermes
+integration's tools.py + __init__.py registration, not in the two plugin.yaml
+manifests' provides_tools lists; vendor mcp_tools.py has no hits for 36-40 names.)
 
 ## B2. Hooks (both manifests: `pre_llm_call`, `on_session_start`, `post_tool_call`)
 
@@ -241,7 +285,10 @@ mnemo2_<agent> schema and shared writes only via the shared_* tools.
 
 ## B3. Config surface (vendor)
 
-- 218 distinct `MNEMOSYNE_*` env constants (grep count, verified; full list in B6).
+- **218 distinct `MNEMOSYNE_*` names over all `.py` files** (`grep -rhoE
+  "MNEMOSYNE_[A-Z0-9_]+" . --include='*.py' | sort -u` = 218; 209 names in
+  source-only scope with tests/ excluded — the earlier draft cited 218 without
+  stating scope; the number stands now that scope is explicit, per QA F1).
   Families: paths (MNEMOSYNE_HOME/DATA_DIR/DB_PATH/BLOB_DIR/BACKUP_DIR/MODEL_DIR/
   MODEL_CACHE_DIR/FASTEMBED_CACHE_DIR), banks (MNEMOSYNE_BANK(_*), DEFAULT_SCOPE,
   CHANNEL_ID, AUTHOR_ID/TYPE), embeddings (EMBEDDING_MODEL/API_URL/API_KEY/DIM/
@@ -269,8 +316,13 @@ mnemo2_<agent> schema and shared writes only via the shared_* tools.
 Memory cores: working_memory, episodic_memory, memory_embeddings (embedding blob +
 metadata), vec_working/vec_episodes (vec0 mirrors), fts stores (fts5 external-content:
 fts_*/memories_fts-style with content_rowid + sync triggers).
-Facts/graph: triples (temporal bitemporal), graph_edges, annotations, entities
-(entities.py fan-out), memories (legacy/typed), memoria_facts.
+Facts/graph: triples (temporal bitemporal), graph_edges, annotations, memoria_facts.
+CORRECTION (QA F3): the earlier "entities (entities.py fan-out)" entry is RETRACTED —
+no `entities` table exists (0 CREATE TABLE hits). core/entities.py is pure
+regex/entity-extraction code with zero SQL; its docstring (entities.py:8) documents
+the fan-out target as the TripleStore `triples` table (subject=memory_id,
+predicate="mentions", object=entity_name) — already listed above. (Dropped alongside:
+"memories" exists only in tests/ fixtures, 0 CREATE TABLE in core source.)
 Persona/canonical layer: memoria_persona, memoria_preferences, memoria_instructions,
 memoria_kg, memoria_timelines, canonical_facts, consolidated_facts, gists, statements,
 data_chunks (verbatim ledger), verbatim ledger companions.
@@ -288,10 +340,12 @@ correction/identity.
 
 ## B5. sqlite-specific mechanisms in mnemosyne vendor (fail-point inventory)
 
-Verified counts: `sqlite_master` 26 refs, `vec0` 29 refs, `sqlite_vec` 8,
-`sqlite_vec_binary` 2, `fts5` 3 (core/beam.py line 1567 `rowid INTEGER PRIMARY KEY
-AUTOINCREMENT`, 1754 content_rowid='rowid', 1769/1774 external-content sync triggers
-with 'delete'/'insert' commands), 7 raw AFTER INSERT/UPDATE trigger bodies,
+Line-count scope now stated (QA F5 — grep -rn, all .py / source-only excl. tests):
+`sqlite_master` 128 / 47, `vec0` 195 / 63, `sqlite_vec` 176 / 44,
+`sqlite_vec_binary` 2 / 2, `fts5` 14 / 6 (core/beam.py line 1567 `rowid INTEGER
+PRIMARY KEY AUTOINCREMENT`, 1754 content_rowid='rowid', 1769/1774 external-content
+sync triggers with 'delete'/'insert' commands); CREATE TRIGGER sites 40 / 11 (the
+earlier "7 raw trigger bodies" was one narrower reading). Also present:
 shmr.py (shared-memory read mode), _connection_gc/connection_release (connection
 lifetime hacks), sqlite_config.py (busy_timeout/journal tuning), migrations
 e6_triplestore_split / e7_311_tables / e8_conflict_pair_key (version-gated ALTER
@@ -349,13 +403,23 @@ never co-loads (fail-fast check at load).
 
 # Reproducibility (evidence commands)
 
-All inventories above are reproducible with grep/git against the exact commits in §0,
-e.g.:
+All inventories above are reproducible with grep/git against the exact commits in §0.
+Every count below states its scope (Phase-0 amendment per QA F1; earlier draft
+commands here did not yield the cited numbers):
 - tools: `cat <repo>/plugin.yaml` (both repos) — counts 15 (lcm) / 20+34 (mnemosyne manifests)
-- tables: `grep -rhoE "CREATE TABLE( IF NOT EXISTS)? [a-z_]+" <src> --include='*.py' | awk '{print $NF}' | sort -u`
-- env: `grep -rhoE "LCM_[A-Z0-9_]+" lcm-upstream/*.py | sort -u` → 218 names;
-  `grep -rhoE "MNEMOSYNE_[A-Z0-9_]+" mnemosyne/ --include='*.py' | sort -u` → 218 names
-- pragmas/mechanisms: `grep -rhoE "PRAGMA [a-z_]+"`, `grep -rhoE "vec0|fts5|sqlite_master"`
+- tables: `grep -rhoE "CREATE TABLE( IF NOT EXISTS)? [a-z_]+" <src> --include='*.py'
+  --exclude-dir=__pycache__ | awk '{print $NF}' | sort -u` → 49 names (hermes-lcm,
+  all .py) / 37 (excluding tests/); A4's wildcard rule is authoritative for R4 tests.
+- env: `grep -rhoE "LCM_[A-Z0-9_]+" lcm-upstream --include='*.py' | sort -u` → 175
+  names (174 excluding tests/); `grep -rhoE "MNEMOSYNE_[A-Z0-9_]+" mnemosyne
+  --include='*.py' | sort -u` → 218 names (209 excluding tests/).
+- pragmas/mechanisms (all .py unless noted): `import sqlite3` files: 24 non-test /
+  52 repo-wide (lcm); PRAGMA names 22 (lcm, see A5 note re: comment-only matches);
+  mnemosyne line-hits: sqlite_master 128 (47 src), vec0 195 (63 src), sqlite_vec
+  176 (44 src), sqlite_vec_binary 2, fts5 14 (6 src); CREATE TRIGGER 40 (11 src).
+  hermes-lcm vec0/sqlite_vec/knn_search: 0 hits (A5 correction).
+- tool 36-40 definitions: `grep -n '"mnemosyne_..."' <repo>/integrations/hermes/src/
+  mnemosyne_hermes/tools.py` (lines in B1 note).
 - hooks: `provides_hooks` in plugin.yaml + `register_hook(` call sites
 
 ## Exit / QA notes for tessa (R-matrix hooks)
