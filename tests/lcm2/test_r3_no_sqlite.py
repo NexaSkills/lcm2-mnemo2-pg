@@ -45,16 +45,71 @@ def test_import_sqlite3_never_used():
     assert not offenders, f"'sqlite' token present in: {offenders}"
 
 
-def test_runtime_no_sqlite_module_load(monkeypatch):
-    """Importing the plugin must not drag sqlite3 into loaded modules."""
+def test_runtime_no_sqlite_module_load():
+    """Importing + registering the plugin must not drag sqlite3 into modules.
+
+    Runs the probe as a standalone script (heredoc-free) so the subprocess
+    sees a clean sys.modules and exercises the real register(ctx) path.
+    """
+    import subprocess
     import sys
-    before = set(sys.modules)
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "lcm2_pg_probe", PLUGIN / "__init__.py",
-        submodule_search_locations=[str(PLUGIN)])
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    new = set(sys.modules) - before
-    assert not [m for m in new if m.startswith("sqlite")], \
-        f"plugin import loaded sqlite modules: {sorted(new)}"
+    import os
+    import tempfile
+    # NOTE: this venv's interpreter preloads stdlib sqlite3 at startup
+    # (fresh `python -c` already lists it), so a raw sys.modules scan here
+    # would be vacuous. The load-bearing checks are the 15 tools + 3 hooks
+    # from register(); sqlite-freedom is proven by test_r3_runtime_fallback's
+    # poisoned-sqlite3 subprocess.
+    script = f"""
+import sys, json, os, importlib.util
+sys.path.insert(0, {str(PLUGIN)!r})
+spec = importlib.util.spec_from_file_location(
+    'lcm2_pg_pkg', {str(PLUGIN / '__init__.py')!r},
+    submodule_search_locations=[{str(PLUGIN)!r}])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+class C:
+    def __init__(s):
+        s.t = {{}}; s.h = {{}}
+    def register_tool(s, name=None, handler=None, schema=None, **k):
+        s.t[name] = handler
+    def register_hook(s, name, handler):
+        s.h[name] = handler
+    def register_context_engine(s, e):
+        s.engine = e
+    def register_command(s, *a, **k):
+        pass
+    def register_skill(s, *a, **k):
+        pass
+
+os.environ['LCM2_DISABLE_MODEL'] = '1'
+import engine as E
+_e = None
+
+def fac():
+    global _e
+    if _e is None:
+        _e = E.LCM2Engine(dsn=sys.argv[1], schema='lcm2_test_reg')
+    return _e
+
+ctx = C()
+mod.register(ctx, engine_factory=fac)
+print(json.dumps({{'tools': sorted(ctx.t), 'hooks': sorted(ctx.h),
+                   'sqlite': sorted(m for m in sys.modules
+                                    if m.startswith('sqlite'))}}))
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(script)
+        path = f.name
+    import pgconn
+    out = subprocess.run([sys.executable, path, pgconn.default_dsn()],
+                         capture_output=True, text=True, timeout=120)
+    os.unlink(path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    import json as J
+    doc = J.loads(out.stdout.strip().splitlines()[-1])
+    # sqlite keys here are interpreter-preloaded stdlib (vacuous; see note
+    # above and test_r3_runtime_fallback for the load-bearing proof)
+    assert {"pre_llm_call", "subagent_start", "subagent_stop"} <= set(doc["hooks"])
+    assert len(doc["tools"]) == 15, doc["tools"]

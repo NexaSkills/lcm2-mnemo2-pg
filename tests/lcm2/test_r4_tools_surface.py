@@ -4,13 +4,12 @@ Live probe of the tool surface (not `hermes tools list`): register(ctx) with
 a fake PluginContext, then invoke every handler against a real schema on
 lcm2db:54331.
 """
+import importlib
 import json
-import os
 
 import pytest
 
 import pgconn
-import tools as T
 
 
 class FakeCtx:
@@ -19,19 +18,19 @@ class FakeCtx:
         self.context_engine = None
         self.skill = None
 
-    def register_tool(self, name, handler, schema=None, **kw):
+    def register_tool(self, name=None, handler=None, schema=None, **kw):
         self.tools[name] = handler
 
     def register_hook(self, name, handler):
         self.hooks[name] = handler
 
-    def register_command(self, name, handler, **kw):
-        self.commands[name] = name
+    def register_command(self, name=None, handler=None, **kw):
+        self.commands[name] = handler
 
     def register_context_engine(self, engine):
         self.context_engine = engine
 
-    def register_skill(self, name, root, **kw):
+    def register_skill(self, name, root=None, **kw):
         self.skill = name
 
 
@@ -44,42 +43,43 @@ VENDOR_TOOLS = [
 
 
 @pytest.fixture
-def engine(schema):
-    import engine as E
+def registered(dsn, schema):
+    import os
     os.environ["LCM2_DISABLE_MODEL"] = "1"  # deterministic extractive summaries
-    return E.LCM2Engine(dsn=pgconn.default_dsn(), schema=schema)
-
-
-def test_register_exposes_all_15_tools_and_hooks(engine):
-    import importlib
-    m = importlib.import_module("__init__" if False else "plugin_entry")
+    import engine as E
+    eng = E.LCM2Engine(dsn=dsn, schema=schema)
+    entry = importlib.import_module("plugin_entry")
     ctx = FakeCtx()
-    m.register(ctx, engine_factory=lambda: engine)
+    entry.register(ctx, engine_factory=lambda: eng)
+    return ctx, eng
+
+
+def test_register_exposes_all_15_tools_and_hooks(registered):
+    ctx, eng = registered
     assert sorted(ctx.tools) == sorted(VENDOR_TOOLS)
     assert {"pre_llm_call", "subagent_start", "subagent_stop"} <= set(ctx.hooks)
-    assert ctx.context_engine is engine
+    assert ctx.context_engine is eng
 
 
 @pytest.mark.parametrize("name", VENDOR_TOOLS)
-def test_tool_callable_returns_json(engine, name):
-    import plugin_entry
-    ctx = FakeCtx()
-    plugin_entry.register(ctx, engine_factory=lambda: engine)
+def test_tool_callable_returns_json(registered, name):
+    ctx, eng = registered
     handler = ctx.tools[name]
-    args = {"query": "test"} if name in (
-        "lcm_grep", "lcm_recall") else {}
-    if name == "lcm_load_session":
+    args = {}
+    if name in ("lcm_grep", "lcm_recall"):
+        args = {"query": "test"}
+    elif name == "lcm_load_session":
         args = {"session_id": "s-none"}
-    if name == "lcm_recent":
+    elif name == "lcm_recent":
         args = {"period": "today"}
-    if name == "lcm_query_state":
+    elif name == "lcm_query_state":
         args = {"subject_key": "user:self"}
-    if name == "lcm_compute":
+    elif name == "lcm_compute":
         args = {"question": "count", "operands": []}
-    if name == "lcm_retrieve":
+    elif name == "lcm_retrieve":
         args = {"action": "status"}
     res = handler(args)
     assert isinstance(res, str)
     doc = json.loads(res)
     assert isinstance(doc, dict)
-    assert "error" not in doc or doc.get("status") != "crash", doc
+    assert doc.get("implementation") == "lcm2-pg/native"

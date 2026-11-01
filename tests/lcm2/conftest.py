@@ -2,7 +2,7 @@
 
 Everything runs against the REAL dedicated instance (socket
 ~/lcm2-mnemo2-pg/pg/run, port 54331, db lcm2db) over the SAME connection
-path the plugin uses in production. No sqlite anywhere (R3).
+path the plugin uses in production. No embedded DB anywhere (R3).
 """
 import os
 import sys
@@ -11,42 +11,56 @@ import pathlib
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "plugins" / "lcm2-pg"))
+PLUGIN_DIR = str(REPO / "plugins" / "lcm2-pg")
+sys.path.insert(0, PLUGIN_DIR)
 
 import pgconn  # noqa: E402  (plugin module)
+import ddl as _plugin_ddl  # noqa: E402
+
+# Neutralize ANY 'ddl' module shadowed into sys.modules by sibling pytest
+# suites (mnemo-pg2's repo-root tests add their own plugins/mnemo-pg2 dir to
+# sys.path): this suite's bootstrap must use lcm2-pg's OWN ddl module.
+_sys_ddl = sys.modules.get("ddl")
+if _sys_ddl is not _plugin_ddl:
+    sys.modules["ddl"] = _plugin_ddl
 
 SOCKET = os.environ.get(
     "LCM2_PG_HOST", os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
 DB = "lcm2db"
-TEST_SCHEMA = "lcm2_test_probe"
+BASE_DSN = f"dbname={DB} host={SOCKET} port=54331 user=mnemo201"
 
-
-def psql_ok() -> bool:
-    try:
-        with pgconn.connect(f"dbname={DB} host={SOCKET} port=54331 user=mnemo201",
-                            TEST_SCHEMA) as cx:
-            return cx.query_scalar("select 1") == 1
-    except Exception:
-        return False
+# Pin the plugin's default DSN + disable the summary model for determinism
+# (tests that specifically test DSN resolution reset this).
+os.environ["LCM2_PG_DSN"] = BASE_DSN
+os.environ["LCM2_DISABLE_MODEL"] = "1"
 
 
 @pytest.fixture(scope="session")
 def dsn():
-    assert psql_ok(), (
-        f"lcm2 instance not reachable at {SOCKET}:54331 db={DB} "
-        "- start it (scripts/ensure_instance.sh); tests never fall back (R3)")
-    return f"dbname={DB} host={SOCKET} port=54331 user=mnemo201"
+    pgconn.shutdown_pools()
+    try:
+        with pgconn.connect(BASE_DSN, "public") as cx:
+            assert cx.query_scalar("select 1") == 1
+    except Exception as e:
+        pytest.fail(f"lcm2 instance unreachable at {SOCKET}:54331 db={DB}: {e}"
+                    " (start scripts/ensure_instance.sh; never falls back, R3)")
+    return BASE_DSN
 
 
 @pytest.fixture
-def schema(dsn):
-    """Fresh throwaway schema per test, dropped afterwards."""
+def schema(dsn, request):
+    """Fresh throwaway schema per test (engine bootstraps into it), dropped
+    afterwards. Pools are closed AFTER drop so cached connections pinned to
+    the dropped search_path can never leak into a later test."""
     import uuid
     name = "lcm2_test_" + uuid.uuid4().hex[:10]
-    with pgconn.connect(f"dbname={DB} host={SOCKET} port=54331 user=mnemo201",
-                        "public", ddl=True) as cx:
+    with pgconn.connect(dsn, "public", ddl=True) as cx:
         cx.execute(f'CREATE SCHEMA "{name}"')
+    request.node._lcm2_schema = name
     yield name
-    with pgconn.connect(f"dbname={DB} host={SOCKET} port=54331 user=mnemo201",
-                        "public", ddl=True) as cx:
-        cx.execute(f'DROP SCHEMA "{name}" CASCADE')
+    try:
+        pgconn.shutdown_pools()
+    finally:
+        with pgconn.connect(dsn, "public", ddl=True) as cx:
+            cx.execute(f'DROP SCHEMA "{name}" CASCADE')
+        pgconn.shutdown_pools()

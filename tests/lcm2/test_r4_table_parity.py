@@ -53,20 +53,33 @@ def test_virtual_tables_are_fts_only():
     assert all(n.endswith("_fts") for n in vt), vt
 
 
-def test_plugin_ddl_covers_every_vendor_table(schema, dsn):
-    src = vendor_source()
-    required = vendor_tables(src, TABLE_RX)
+def test_plugin_ddl_covers_every_vendor_table(dsn, schema):
+    # bootstrap via the PLUGIN's own DDL (loaded from its file path so the
+    # bare 'ddl' module name can never be shadowed by sibling suites)
+    import importlib.util
+    import pathlib
+    import pgconn
+    p = str(pathlib.Path(__file__).resolve().parents[2]
+            / "plugins" / "lcm2-pg" / "ddl.py")
+    spec = importlib.util.spec_from_file_location("_lcm2pg_ddl_parity", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert hasattr(mod, "apply_schema") and len(mod.TABLES) == 37
     with pgconn.connect(dsn, schema, ddl=True) as cx:
-        cx.bootstrap()
+        mod.apply_schema(cx)
         have = set(cx.query(
             "select table_name from information_schema.tables "
             "where table_schema = %s", (schema,)))
-    missing = required - have
+    missing = vendor_tables(vendor_source(), TABLE_RX) - have
     assert not missing, f"tables missing from lcm2-pg bootstrap: {sorted(missing)}"
 
 
-def test_no_fts_virtual_tables_created(schema, dsn):
+def test_no_fts_virtual_tables_created(dsn, schema):
+    # must go through the shipped code path: Conn.bootstrap()
+    import pgconn
     with pgconn.connect(dsn, schema, ddl=True) as cx:
         cx.bootstrap()
         sql = "\n".join(cx.ddl_log)
     assert not VTABLE_RX.search(sql)
+    # and the shipped bootstrap must be the real one (37 tables)
+    assert "CREATE TABLE IF NOT EXISTS messages" in sql
