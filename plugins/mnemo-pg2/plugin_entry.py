@@ -66,9 +66,14 @@ def _wildcard_names():
 
 
 def _dispatch(tool_name, args):
-    """The vendor boundary: JSON kwargs in, JSON-serializable value out.
-    Unknown/missing methods and any exception surface as an error dict —
-    never an exception into the host (no fallback paths anywhere, R3)."""
+    """The vendor boundary: JSON kwargs in, JSON string out.
+
+    Host contract (tools/registry.py::_normalize_handler_result): a
+    handler's return must be a STRING (or the multimodal envelope) —
+    a bare dict is rejected with tool_result_contract. So every path
+    here returns json.dumps(...). Unknown/missing methods and any
+    exception surface as an error dict — never an exception into the
+    host (no fallback paths anywhere, R3)."""
     meth = _method_name(tool_name)
     try:
         # host-injected engine (kwargs['engine']) only if it IS ours
@@ -83,7 +88,7 @@ def _dispatch(tool_name, args):
             eng = _engine.Engine()
         fn = getattr(eng, meth, None)
         if fn is None or not callable(fn):
-            return {"ok": False, "error": f"unknown tool: {tool_name}"}
+            return json.dumps({"ok": False, "error": f"unknown tool: {tool_name}"})
         kwargs = dict(args or {})
         kwargs.pop("__engine__", None)
         # handler may be called positionally ({...}) or with **kwargs by
@@ -91,13 +96,15 @@ def _dispatch(tool_name, args):
         if list(kwargs) == ["args"] and isinstance(kwargs["args"], dict):
             kwargs = kwargs["args"]
         out = fn(**kwargs)
-        if isinstance(out, dict):
+        if isinstance(out, str):
             return out
-        return {"ok": True, "result": out}
+        if isinstance(out, dict):
+            return json.dumps(out, default=str)
+        return json.dumps({"ok": True, "result": out}, default=str)
     except TypeError as e:
-        return {"ok": False, "error": f"bad arguments for {tool_name}: {e}"}
+        return json.dumps({"ok": False, "error": f"bad arguments for {tool_name}: {e}"})
     except Exception as e:  # surface, never swallow, never fall back (R3)
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
 _TYPE_MAP = ((bool, "boolean"), (int, "integer"), (float, "number"),
