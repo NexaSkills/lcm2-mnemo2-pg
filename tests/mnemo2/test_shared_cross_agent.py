@@ -23,9 +23,24 @@ def _mk(dsn, b, sh, request):
     request.addfinalizer(_drop)
 
 
-def _agent_ctx(dsn, priv, shared):
+def _agent(dsn, priv, shared):
+    """(ctx, close) — a registered agent whose env pin (private + shared
+    schema) SPANS its whole lifetime; the engine resolves schemas per-call
+    from env, so pinning only at register time lets a later register_plugin
+    (another test/agent) retarget it. close() restores the env."""
+    prev = (os.environ.get("MNEMO2_SCHEMA"),
+            os.environ.get("MNEMO2_SHARED_SCHEMA"))
+    os.environ["MNEMO2_SCHEMA"] = priv
+    os.environ["MNEMO2_SHARED_SCHEMA"] = shared
+
+    def close():
+        for k, v in zip(("MNEMO2_SCHEMA", "MNEMO2_SHARED_SCHEMA"), prev):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     mod, ctx = register_plugin(dsn, priv=priv, shared=shared)
-    return ctx
+    return ctx, close
 
 
 def test_shared_visible_from_two_agents(dsn, priv_schema, request):
