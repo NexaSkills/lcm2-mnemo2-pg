@@ -25,6 +25,18 @@ def _engine_factory_from_env():
     return anchor("engine").LCM2Engine()
 
 
+def _release_all():
+    """release_all() for the end of register(): resolve _selfimport via a
+    key that exists HERE (bare during the exec window; the namespaced
+    alias survives the purge) — never a bare host-bound import."""
+    try:
+        from _selfimport import release_all
+        return release_all
+    except Exception:
+        import __init__ as _pkg  # only ever OUR package __init__
+        return _pkg._selfimport_module().release_all
+
+
 def register(ctx, engine_factory=None):
     """Plugin entry: context engine + 15 tools + hooks + /lcm command."""
     from _selfimport import anchor
