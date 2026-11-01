@@ -183,9 +183,14 @@ class Conn:
                 # Cross-agent views: ensure them against the CONFIGURED
                 # shared schema at connect time (bootstrap() only bakes
                 # the default); invalid name = fail-closed, never silent.
-                import ddl as _ddl
+                # Bind OUR ddl by FILE (namespaced key) — a bare `import
+                # ddl` binds the HOST's package post-register-purge.
+                _d = sys.modules.get("_mnemo2_impl_ddl")
+                if _d is None or getattr(_d, "shared_view_statements", None) is None:
+                    self._own_ddl()  # binds _mnemo2_impl_ddl by file
+                    _d = sys.modules["_mnemo2_impl_ddl"]
                 try:
-                    for stmt in _ddl.shared_view_statements():
+                    for stmt in _d.shared_view_statements():
                         self._cx.execute(stmt)
                     self._cx.commit()
                 except Exception:
@@ -237,8 +242,25 @@ class Conn:
     def _own_ddl(self):
         mod = self._ddl_mod
         if mod is None:
-            from _selfimport import anchor  # noqa: plugin-local import
-            mod = anchor("ddl")
+            # Late ddl binding: the register() purge deletes the bare
+            # '_selfimport'/'ddl' keys, so the old `from _selfimport
+            # import anchor` died on host-dispatched calls (F-2). Bind by
+            # FILE next to this module, under namespaced keys only — zero
+            # bare-name publication, works from any thread post-purge.
+            import importlib.util as _ilu
+            import os as _os
+            _here = _os.path.dirname(_os.path.abspath(__file__))
+            _ss = sys.modules.get("_mnemo2_impl_ddl")
+            if _ss is not None and getattr(_ss, "statements", None) is not None:
+                mod = _ss
+            else:
+                _p = _ilu.spec_from_file_location(
+                    "_mnemo2_impl_ddl", _os.path.join(_here, "ddl.py"))
+                if _p is None or _p.loader is None:  # pragma: no cover
+                    raise ImportError("mnemo-pg2: ddl.py missing next to pgconn.py")
+                mod = _ilu.module_from_spec(_p)
+                sys.modules["_mnemo2_impl_ddl"] = mod
+                _p.loader.exec_module(mod)
         # pgvector must exist in THIS database before any VECTOR-typed DDL.
         # CRITICAL: commit BEFORE the table CREATEs and never hold a lock
         # across both — a CREATE EXTENSION staying open in the same

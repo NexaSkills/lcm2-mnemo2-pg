@@ -170,6 +170,16 @@ def _mine(mod) -> bool:
         os.path.realpath(f)) == os.path.realpath(_HERE)
 
 
+def _is_ready(name, mod):
+    """Fully-executed gate for our own modules (attribute-completeness):
+    a stub mid-exec (purged key, exec in flight) is never 'ready'."""
+    if name == "_selfimport":
+        return hasattr(mod, "anchor")
+    if name == "plugin_entry":
+        return hasattr(mod, "register")
+    return True
+
+
 def _host_pkg_owner(name):
     """File (module) the PROCESS would bind for a fresh bare `import <name>`,
     via the meta-path finders alone (no sys.path import cache). If that is a
@@ -210,7 +220,22 @@ def anchor(name: str, filename: str | None = None):
         if candidate and candidate in sys.modules and _mine(sys.modules[candidate]):
             if candidate == name and _bare_host_pkg:
                 continue  # stale OURS binding under a now-host-owned key
-            return sys.modules[candidate]
+            cand = sys.modules[candidate]
+            # CONCURRENT-REGISTER GATE (R8): a concurrent register()'s
+            # purge deletes the key while another thread is mid
+            # exec_module on the SAME object — the binding is ours but
+            # an attribute-less stub. Serve the fully-executed twin from
+            # the identity registry instead; a stub is never returned
+            # (the "'_mnemo2_impl_plugin_entry' has no attribute
+            # 'register'" race class).
+            if _is_ready(name, cand):
+                return cand
+            twin = _published().get(f"_mnemo2_impl_{name}")
+            if (twin is not None and twin is not cand and _mine(twin)
+                    and _is_ready(name, twin)):
+                return twin
+            # stub with no twin: fall through to the rebuild path below
+            break
     if not os.path.isfile(path):
         raise ImportError(f"mnemo-pg2: {filename}.py not found in {_HERE}")
     full = f"_mnemo2_impl_{name}"
@@ -252,6 +277,10 @@ def anchor(name: str, filename: str | None = None):
             # keep (P2FLIP3 discipline — never adopt, never overwrite a
             # live host-PACKAGE binding; rebuild ours by file).
             sys.modules.pop(full, None)
+            _pub_cell.pop(full, None)  # dead stub OUT of the registry
+            # too: the sibling-key loop above already ruled the binding
+            # foreign-adopted; an entry left here would hand the NEXT
+            # anchor() a stub that only looks OURS by __file__.
         # mid-exec stub: a concurrent purge deleted the key WHILE another
         # thread was exec_module-ing our file into it (exec never re-
         # checks sys.modules): the binding is OUR object with OUR file
