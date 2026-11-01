@@ -67,13 +67,6 @@ HOST_BARE = {"tools", "engine", "pgconn", "schemas", "command", "hooks",
 # would bind our flat file (ModuleNotFoundError: 'tools' is not a package,
 # the F1 crash class).
 NEVER_PUBLISH = {"os", "io", "sys", "types", "json", "time", "logging"}
-# Module-global depth of anchor() exec windows (ALL threads). Imports
-# fired from inside our exec_module — worker threads spawned mid-exec,
-# deferred calls, nested anchors — carry no "our" frame once they drift
-# onto stdlib codepaths, so the frame-stack origin gate misses them.
-# This counter covers those: while it is > 0 we serve OUR names; frame
-# stacks are only consulted when it is 0 (late routes, no exec running).
-_ANCHOR_DEPTH = [0]
 
 
 class _SibFinder:

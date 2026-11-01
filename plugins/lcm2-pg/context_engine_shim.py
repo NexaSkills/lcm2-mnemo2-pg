@@ -128,6 +128,9 @@ class LCM2PgContextEngine(ContextEngine):
         return LCM2PgContextEngine(dsn=self._impl.dsn, schema=self._impl.schema)
 
 
+_ACTIVE = [0]  # >0 while OUR frames are importing (F-2: defined BEFORE first _engage() use at module warm-call below)
+
+
 def _engage():
     """Activate the file finder for the bridge's import chain.
 
@@ -139,7 +142,7 @@ def _engage():
     names (its own `tools`/`engine` packages) take their normal routes."""
     _ACTIVE[0] += 1
 
-    def _disarm(_f=sys._getframe()):
+    def _disarm():
         _ACTIVE[0] -= 1
 
     _disarm.__name__ = "_lcm2_disarm"
@@ -154,13 +157,6 @@ def register(ctx):
     finally:
         _disarm()
     ctx.register_context_engine(engine)
-
-
-_disarm_module = _engage()
-try:
-    _warm = _impl_class()  # resolves engine -> pgconn -> ddl by file
-finally:
-    _disarm_module()
 
 
 # The context-engine capture loader may instantiate the engine class it
@@ -214,7 +210,6 @@ def _fsib(name: str):
 # Chain the siblings in import order so their OWN bare imports find the
 # previously registered namespaced modules through a tiny meta-path hook
 # scoped to OUR module names (never touches foreign names).
-_ACTIVE = [0]  # >0 while OUR frames are importing
 
 
 def _engaged():
@@ -300,3 +295,14 @@ def _readd_finder() -> None:
         f = _Lcm2FileFinder()
         f._names_marker = _HERE
         sys.meta_path.insert(0, f)
+
+
+# Module-warm: build the impl class AFTER every helper above is
+# defined (F-2: _impl_class uses _readd_finder/_remove_finder defined
+# below the old position of this block -> NameError killed the whole
+# shim import, which is why the bridge never registered).
+_disarm_module = _engage()
+try:
+    _warm = _impl_class()  # resolves engine -> pgconn -> ddl by file
+finally:
+    _disarm_module()
