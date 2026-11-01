@@ -7,7 +7,8 @@
 #   - only the profile .env is file-edited (params)
 #   - plugin dirs are SYMLINKS to the single repo source (edit once = all agents)
 #   - delegation posture 1/1 (fleet standard)
-# Usage: onboard_profile.sh <agent> [--dry-run]
+# Usage: onboard_profile.sh <agent> [--dry-run]   (or: onboard_profile.sh --dry-run
+#       with no agent = list on-disk profiles and exit 0)
 set -euo pipefail
 
 ARG1=${1:?usage: onboard_profile.sh <agent> [--dry-run]}
