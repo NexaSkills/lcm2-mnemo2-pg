@@ -24,6 +24,23 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PKG = (__package__ or "").split(".")[0]
 _ANCHORED: set = set()  # names ever anchor()'d in this interpreter
+# Keys WE have ever published under, registry-style (module identity):
+# a concurrent register() purge can delete our binding while another
+# thread is mid-exec_module on the SAME object (exec_module never re-
+# checks sys.modules), leaving an EMPTY stub (no attributes) that a later
+# anchor() must rebuild rather than return. Registry located by shared
+# key so every copy of this file agrees.
+_PUBKEY = "_mnemo2_pub_registry_ours"
+
+
+def _published():
+    reg = sys.modules.get(_PUBKEY)
+    if reg is None:
+        import types as _t
+        reg = _t.ModuleType(_PUBKEY)
+        setattr(reg, "CELL", {})  # key -> module object we published
+        sys.modules[_PUBKEY] = reg
+    return getattr(reg, "CELL")
 # Exec-window depth, module-global (list cell: shared by EVERY copy of
 # this file in the interpreter — the _mnemo2_impl_, package-qualified and
 # namespaced-alias loads must agree on ONE counter). anchor() increments
@@ -198,7 +215,59 @@ def anchor(name: str, filename: str | None = None):
         raise ImportError(f"mnemo-pg2: {filename}.py not found in {_HERE}")
     full = f"_mnemo2_impl_{name}"
     mod = sys.modules.get(full)
-    if mod is None or not _mine(mod):
+    _pub_cell = _published()
+    if mod is None:
+        # Fast candidate loop skipped this key. Two legitimate reasons a
+        # fully-built module may sit in the identity registry: (a) a
+        # concurrent register() PURGE deleted the binding (purge removes
+        # sys.modules keys, never registry entries); (b) an earlier exec
+        # published a DIFFERENT object under the package-qualified alias
+        # and the registry kept the newest. Reuse only if the registry
+        # module is fully executed (attribute-complete).
+        cand = _pub_cell.get(full)
+        if cand is not None and _mine(cand):
+            _ready = (hasattr(cand, "anchor") if name == "_selfimport"
+                      else hasattr(cand, "register") if name == "plugin_entry"
+                      else True)
+            if _ready:
+                mod = cand
+                sys.modules[full] = mod
+    if mod is None and full in _pub_cell and _mine(_pub_cell[full]):
+        # the fast candidate loop lost the key to a concurrent register()
+        # PURGE (purge deletes sys.modules keys but not the identity
+        # registry): the registry holds the fully-executed module object —
+        # reuse it, and re-attach the binding for sibling imports.
+        mod = _pub_cell[full]
+        if mod is not None and (hasattr(mod, "anchor") or name !=
+                                "_selfimport"):
+            sys.modules[full] = mod
+            if name != "_selfimport" and not hasattr(mod, "anchor"):
+                pass  # plugin_entry stub mid-exec: fall through, rebuild
+        else:
+            mod = None
+    if mod is None or (mod is not _pub_cell.get(full) and not _mine(mod)):
+        if mod is not None and mod is not _pub_cell.get(full) \
+                and not _mine(mod):
+            # Foreign binding under a namespaced OURS key: not ours to
+            # keep (P2FLIP3 discipline — never adopt, never overwrite a
+            # live host-PACKAGE binding; rebuild ours by file).
+            sys.modules.pop(full, None)
+        # mid-exec stub: a concurrent purge deleted the key WHILE another
+        # thread was exec_module-ing our file into it (exec never re-
+        # checks sys.modules): the binding is OUR object with OUR file
+        # but ZERO attributes. Registry membership proves the object is
+        # OURS; reuse only a fully-executed module, else rebuild.
+        if mod is not None and _mine(mod):
+            if hasattr(mod, "anchor") or (name != "_selfimport"
+                                          and hasattr(mod, "register")):
+                return mod
+            _pub_cell[full] = mod  # keep registry fresh either way
+            if full in _pub_cell and _pub_cell[full] is not mod \
+                    and hasattr(_pub_cell[full], "anchor"):
+                mod = _pub_cell[full]  # complete twin in registry: use it
+                sys.modules[full] = mod
+                return mod
+            return mod  # ours-by-file, incomplete, no twin: rebuild below
         spec = importlib.util.spec_from_file_location(full, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"mnemo-pg2: cannot build spec for {path}")
@@ -234,6 +303,8 @@ def anchor(name: str, filename: str | None = None):
         try:
             mod = importlib.util.module_from_spec(spec)
             sys.modules[full] = mod
+            _published()[full] = mod  # registry: ours, even if a purge
+            #                     deletes the binding mid-exec (stub gate)
             spec.loader.exec_module(mod)
         finally:
             _ANCHOR_DEPTH[0] -= 1

@@ -155,6 +155,21 @@ class Conn:
             self._cx.rollback()
             raise
         if self._want_ddl:
+            # FIRST-WRITE-ER-WINS bootstrap (concurrency-safe, R8): every
+            # connect wants DDL but only ONE backend per (dsn, schema) may
+            # run the CREATEs — two concurrent CREATE TABLE IF NOT EXISTS
+            # race on pg_type (pg_type_typname_nsp_index UniqueViolation).
+            # The lock stays HELD to the end of the bootstrap transaction
+            # (xact-scoped, no commit here — _own_ddl commits at the end),
+            # which also serializes its CREATE EXTENSION against pg_depend.
+            try:
+                self._cx.execute(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext(%s)::bigint, "
+                    "(SELECT COALESCE(max(classid),0) FROM pg_class)::bigint)",
+                    (f"{self.dsn}\x1f{self.schema}",))
+            except Exception:
+                self._cx.rollback()
             self._own_ddl()
             self._want_ddl = False
             if self.kind == "private":
@@ -217,11 +232,18 @@ class Conn:
         if mod is None:
             from _selfimport import anchor  # noqa: plugin-local import
             mod = anchor("ddl")
-        # pgvector must exist in THIS database before any VECTOR-typed DDL;
-        # _ensure_ext_in_pg_catalog only covers the postgres DB (template1
-        # propagation). Idempotent, own-transaction safe via SAVEPOINT-less
-        # retry: run it against the connected database first.
+        # pgvector must exist in THIS database before any VECTOR-typed DDL.
+        # Serialize on the SAME advisory-lock key class as the table
+        # CREATEs: CREATE EXTENSION races with concurrent CREATE TABLE on
+        # pg_depend (FeatureNotSupported: cannot alter a subobject of the
+        # extension). In one transaction with the lock (xact lock, not
+        # commit — committing the lock would release it early).
         try:
+            self._cx.execute(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext(%s)::bigint, "
+                "(SELECT COALESCE(max(classid),0) FROM pg_class)::bigint)",
+                (f"{self.dsn}\x1f{self.schema}",))
             self._cx.execute("CREATE EXTENSION IF NOT EXISTS vector")
             self._cx.commit()
         except Exception:

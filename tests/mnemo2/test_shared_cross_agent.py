@@ -53,7 +53,8 @@ def test_shared_visible_from_two_agents(dsn, priv_schema, request):
     _mk(dsn, b, sh, request)
 
     marker = "shared-marker-" + uuid.uuid4().hex[:8]
-    ctx_a = _agent_ctx(dsn, a, sh)
+    ctx_a, close_a = _agent(dsn, a, sh)
+    request.addfinalizer(close_a)
     r = ctx_a.tools["mnemosyne_shared_remember"]["handler"](
         {"content": f"cross-agent fact {marker}", "importance": 0.9})
     assert r.get("id") or r.get("memory_id") or r.get("ok"), r
@@ -66,7 +67,8 @@ def test_shared_visible_from_two_agents(dsn, priv_schema, request):
     assert len(rows) == 1, rows
 
     # agent B (different private schema, same shared) sees it
-    ctx_b = _agent_ctx(dsn, b, sh)
+    ctx_b, close_b = _agent(dsn, b, sh)
+    request.addfinalizer(close_b)
     hit = ctx_b.tools["mnemosyne_shared_recall"]["handler"](
         {"query": marker})
     txt = json.dumps(hit)
@@ -100,8 +102,10 @@ def test_private_isolation_both_ways(dsn, priv_schema, request):
     _mk(dsn, b, sh, request)
 
     secret = "private-only-" + uuid.uuid4().hex[:8]
-    ctx_a = _agent_ctx(dsn, a, sh)
-    ctx_b = _agent_ctx(dsn, b, sh)
+    ctx_a, close_a = _agent(dsn, a, sh)
+    ctx_b, close_b = _agent(dsn, b, sh)  # B registered LAST: env pins it
+    request.addfinalizer(close_b)
+    request.addfinalizer(close_a)
     r = ctx_a.tools["mnemosyne_remember"]["handler"](
         {"content": f"private {secret}", "scope": "global"})
     assert r.get("id") or r.get("memory_id") or r.get("ok"), r
