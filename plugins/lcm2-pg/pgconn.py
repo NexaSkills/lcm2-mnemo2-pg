@@ -127,7 +127,7 @@ class Conn:
         # nothing.
         # DELIBERATE: ddl=True (bootstrap) connects under schema `public`
         # (bootstrap DDL is unqualified — it must land in the session
-        # schema; see test_r4_no_sqlite). If public still holds relations
+        # schema; see test_r4_no_embedded). If public still holds relations
         # at that moment, bootstrap would silently build the whole 37-table
         # store THERE (the F3 public-residue regeneration loop). Fail closed
         # instead: public must be empty (scripts/sweep_public_residue.py);
@@ -142,11 +142,11 @@ class Conn:
         return self
 
     def _public_busy(self) -> bool:
-        return bool(self._conn.execute(
+        return bool(self.query_scalar(
             "select exists(select 1 from pg_class c "
             "join pg_namespace n on n.oid = c.relnamespace "
             "where n.nspname = 'public' "
-            "and c.relkind in ('r','p','m','v','f'))").fetchone()[0])
+            "and c.relkind in ('r','p','m','v','f'))"))
 
     def _evict_pool(self) -> None:
         """Close+drop THIS Conn's pool (used when checkout never succeeded)."""

@@ -19,6 +19,7 @@ delegation survives any module-name confusion, subclassing does not.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 
 from agent.context_engine import ContextEngine
@@ -121,25 +122,118 @@ class LCM2PgContextEngine(ContextEngine):
         return LCM2PgContextEngine(dsn=self._impl.dsn, schema=self._impl.schema)
 
 
+def _engage():
+    """Activate the file finder for the bridge's import chain.
+
+    The host may capture the engine by its CLASS (subclass scan) without
+    ever calling register(), and class-body attributes resolve at module
+    import time — before any register(). Engaging from THIS frame's
+    module globals works for both routes (register() call or dir(mod)
+    scan). Disarms at exit, so the host's later imports of the same bare
+    names (its own `tools`/`engine` packages) take their normal routes."""
+    _ACTIVE[0] += 1
+
+    def _disarm(_f=sys._getframe()):
+        _ACTIVE[0] -= 1
+
+    _disarm.__name__ = "_lcm2_disarm"
+    return _disarm
+
+
 def register(ctx):
     """Category-capture entry (context engine slot): the bridge engine."""
-    ctx.register_context_engine(LCM2PgContextEngine())
+    _disarm = _engage()
+    try:
+        engine = LCM2PgContextEngine()
+    finally:
+        _disarm()
+    ctx.register_context_engine(engine)
 
 
-# The context-engine capture loader instantiates the engine class it finds
-# in the module namespace WITHOUT calling register() (plugin_loader.
-# instance_from_module's subclass scan, or the isolation host's class
-# capture). That left tools dispatching through a never-anchored namespace
-# ("No module named 'pgconn'"). Anchor our sibling bare names at class-
-# creation time too — anchor() restores any foreign holder it evicts when
-# its importing frame exits, and the engine methods resolve siblings via
-# _sib/_own_* file paths regardless, so this only closes the gap for
-# later bare imports inside our modules.
+_disarm_module = _engage()
 try:
-    from _selfimport import anchor as _anchor
-    _anchor("pgconn")
-    _anchor("engine")
-    _anchor("tools")
-    _anchor("schemas")
-except Exception:  # pragma: no cover — package layout problem: stay inert
-    pass
+    _warm = _impl_class()  # resolves engine -> pgconn -> ddl by file
+finally:
+    _disarm_module()
+
+
+# The context-engine capture loader may instantiate the engine class it
+# finds in the module namespace WITHOUT calling register(), and it imports
+# our modules as SUBMODULES of a synthetic namespace
+# (_hermes_user_context_engine.lcm2-pg.*). Bare sibling imports (pgconn,
+# tools, schemas, ...) then have no resolution path at all, and mutating
+# sys.path would let the HOST's root modules (tools package, engine
+# package) resolve wrongly from then on (observed: later host import
+# `tools.transcription_common` exploded because `tools` resolved to our
+# FILE). So: resolve siblings by FILE into namespaced module names only
+# (lcm2_pg_fs_<name>), injected as each module's __loader__-independent
+# sys.modules entry. No bare-name registrations, no sys.path edits.
+_FSTYPE = ("pgconn", "ddl", "rollup_periods", "engine", "tools", "schemas",
+           "hooks", "command")
+
+
+def _fsib(name: str):
+    """Our sibling <name>.py by FILE, in a namespaced sys.modules slot.
+
+    Idempotent. tools.py / hooks.py import pgconn etc. BARE, so after
+    registering the namespaced copies we also expose them under their
+    bare names ONLY while no foreign holder exists; a foreign holder is
+    never evicted from this path (the engine's own _sib/_own_* file
+    resolution is the primary route; this is the belt for the module-
+    namespace-import route the loader may take)."""
+    full = f"lcm2_pg_fs_{name}"
+    cur = sys.modules.get(full)
+    if cur is not None and getattr(cur, "__file__", None):
+        return cur
+    path = _os.path.join(_HERE, name + ".py")
+    if not _os.path.isfile(path):
+        raise ImportError(f"lcm2-pg bridge: no {name}.py in {_HERE}")
+    spec = importlib.util.spec_from_file_location(full, path)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise ImportError(f"lcm2-pg bridge: bad spec for {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[full] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Chain the siblings in import order so their OWN bare imports find the
+# previously registered namespaced modules through a tiny meta-path hook
+# scoped to OUR module names (never touches foreign names).
+_ACTIVE = [0]  # >0 while OUR frames are importing
+
+
+def _engaged():
+    f = sys._getframe(1)
+    while f is not None:
+        fn = getattr(f, "f_globals", {}).get("__file__", "")
+        if isinstance(fn, str) and _os.path.dirname(
+                _os.path.realpath(fn)) == _HERE:
+            return True
+        f = f.f_back
+    return False
+
+
+class _Lcm2FileFinder:
+    """Meta-path finder that resolves the plugin's OWN module names from
+    this directory by file — but ONLY while a frame from our directory is
+    on the import stack. Foreign imports (the host's `tools
+    .transcription_common`, `engine.tool_*`) take their normal routes:
+    a global file redirect under our names would hijack them."""
+
+    _names = set(_FSTYPE) & set()  # replaced below; see find_spec
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in _FSTYPE or not (_ACTIVE[0] or _engaged()):
+            return None
+        p = _os.path.join(_HERE, fullname + ".py")
+        if not _os.path.isfile(p):
+            return None
+        return importlib.util.spec_from_file_location(fullname, p)
+
+
+if not any(type(f).__name__ == "_Lcm2FileFinder" and getattr(f, "_names_marker", None) == _HERE
+           for f in sys.meta_path):
+    _finder = _Lcm2FileFinder()
+    _finder._names_marker = _HERE
+    sys.meta_path.insert(0, _finder)
