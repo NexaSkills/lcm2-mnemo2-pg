@@ -181,16 +181,27 @@ def anchor(name: str, filename: str | None = None):
     # later `import <pkg>.<name>` still resolves into OUR file.
     _ANCHORED.add(name)
     evicted = {}
-    publish = [f"{_PKG}.{name}"] if _PKG else [name]
-    if not name.startswith("_") and name not in NEVER_PUBLISH:
+    # F-1 (bindtrace-proven): ANY publication under a bare name another
+    # thread may import is poison. The host caches a poisoned module
+    # object inside its own import lock if `import tools.<sub>` lands
+    # while sys.modules['tools'] is OUR flat file; release_all() after
+    # register cannot un-poison the cached object (boot crash 'tools is
+    # not a package', 16/20 boots @1cd252a). Under the package-qualified
+    # route the bare name never changes hands, so it is always safe here.
+    if _PKG:
+        publish = [f"{_PKG}.{name}"]
+    elif name.startswith("_"):
+        publish = [name]  # underscore-private: no host/stdlib importer
+    else:
         try:
             _sp = _host_pkg_owner(name)
-            if _sp is None or _sp.submodule_search_locations is None:
-                publish.append(name)  # flat-name world (standalone): keep bare
-            elif sys.modules.get(name) is not None and _mine(sys.modules[name]):
-                publish.append(name)  # we already own the current binding
+            publish = [name] if (
+                _sp is None or _sp.submodule_search_locations is None) else []
         except Exception:
-            publish.append(name)
+            publish = []  # undecided owner: package key alone is the safe side
+        if not publish and sys.modules.get(name) is not None and \
+                _mine(sys.modules.get(name)):
+            publish = [name]  # we already own the current binding
     for n in publish:
         cur = sys.modules.get(n)
         if cur is not None and not _mine(cur):

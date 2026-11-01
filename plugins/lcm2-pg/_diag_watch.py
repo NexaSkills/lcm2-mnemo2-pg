@@ -47,9 +47,47 @@ def start():
         except Exception:
             pass
 
+    def _hook_meta():
+        """Wrap find_spec on every meta_path finder installed NOW (and
+        retry — finders added later get hooked by the poll loop)."""
+        for f in list(sys.meta_path):
+            cls = type(f)
+            if getattr(cls.find_spec, "_lcm2_diag", False):
+                continue
+            orig = cls.find_spec
+
+            def wrapper(self, name, path=None, target=None, _o=orig):
+                try:
+                    r = _o(self, name, path, target)
+                except Exception:
+                    log.write(f"[{round(time.time()-t0,2)}] {cls.__name__}.find_spec({name!r}) RAISED\n"
+                              + "".join(traceback.format_stack())[-2200:] + "\n====\n")
+                    raise
+                if name and name.split(".")[0] in ("tools", "engine") and r is not None:
+                    org = ""
+                    ours = False
+                    try:
+                        org = getattr(r, "origin", "") or ""
+                        ours = bool(org) and _op.dirname(_op.realpath(org)) == target
+                    except Exception:
+                        ours = False
+                    if ours:
+                        log.write(f"[{round(time.time()-t0,2)}] {cls.__name__}.find_spec({name!r}) -> OUR {org}\n"
+                                  + "".join(traceback.format_stack())[-2200:] + "\n====\n")
+                return r
+            try:
+                wrapper._lcm2_diag = True
+            except Exception:
+                pass
+            try:
+                cls.find_spec = wrapper
+            except Exception:
+                pass
+
     import importlib._bootstrap as _b
     import importlib._bootstrap_external as _be
     t0 = time.time()
+    _hook_meta()
     for cls, lab in ((_b.BuiltinImporter, "BuiltinImporter"),
                      (_b.FrozenImporter, "FrozenImporter"),
                      (_be.PathFinder, "PathFinder"),
