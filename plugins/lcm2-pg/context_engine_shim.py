@@ -43,7 +43,13 @@ def _impl_class() -> type:
         raise ImportError(f"lcm2-pg: cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules.setdefault("lcm2_pg_engine", mod)
-    spec.loader.exec_module(mod)
+    _readd_finder()
+    _d = _engage()
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        _d()
+        _remove_finder()
     _impl_cache.append(mod.LCM2Engine)
     return mod.LCM2Engine
 
@@ -246,3 +252,32 @@ if not any(type(f).__name__ == "_Lcm2FileFinder" and getattr(f, "_names_marker",
     _finder = _Lcm2FileFinder()
     _finder._names_marker = _HERE
     sys.meta_path.insert(0, _finder)
+
+
+def _remove_finder() -> None:
+    """Drop OUR meta-path finder from the GLOBAL list.
+
+    A permanent meta-path finder is dangerous: another thread (host boot)
+    could be mid-import of a bare name in _FSTYPE while _engaged() sees
+    one of our frames and hijacks the HOST's import to our file. The
+    finder only ever matters during OUR import windows (_ACTIVE / our
+    frames on the stack), so we remove it as soon as the bridge module
+    body finishes; _impl_class()/_fsib()/register() each _engage() around
+    their own work and _readd() the finder just for that window.
+    """
+    for f in list(sys.meta_path):
+        if type(f).__name__ == "_Lcm2FileFinder" and \
+                getattr(f, "_names_marker", None) == _HERE:
+            try:
+                sys.meta_path.remove(f)
+            except ValueError:
+                pass
+
+
+def _readd_finder() -> None:
+    if not any(type(f).__name__ == "_Lcm2FileFinder"
+               and getattr(f, "_names_marker", None) == _HERE
+               for f in sys.meta_path):
+        f = _Lcm2FileFinder()
+        f._names_marker = _HERE
+        sys.meta_path.insert(0, f)
