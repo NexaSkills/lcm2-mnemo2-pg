@@ -258,7 +258,25 @@ def _host_pkg_owner(name):
 
 def anchor(name: str, filename: str | None = None):
     """Import <this dir>/<filename or name>.py by file and register it as
-    `name` (plus `<pkg>.<name>`), returning the module."""
+    `name` (plus `<pkg>.<name>`), returning the module.
+
+    R8 (P3STEP4): the WHOLE body runs under the shared anchor lock. The
+    ready-check, the stub-drop, and the exec are not atomic otherwise:
+    (1) a purge racing another thread's exec leaves/returns an
+    attribute-less stub ('no attribute register' / KeyError on sibling
+    keys); (2) worse, two threads can both reach the rebuild path for
+    the SAME fully-built module object and exec_module() it IN PLACE —
+    that clears its dict first, so a live module goes attribute-less
+    mid-iteration for every other thread. The gate is re-checked under
+    the lock (no TOCTOU) via _anchor_locked(); re-entrant RLock so
+    nested anchors from our own exec window serialize per-thread only
+    against other threads' anchors — exec windows stay as they were.
+    """
+    with _anchor_lock():
+        return _anchor_locked(name, filename)
+
+
+def _anchor_locked(name: str, filename: str | None = None):
     filename = filename or name
     path = os.path.join(_HERE, filename + ".py")
     # F-1 (P2FLIP3): a bare key the host owns as a PACKAGE is never ours to
@@ -268,92 +286,93 @@ def anchor(name: str, filename: str | None = None):
     # of thread, so a flat file published under 'tools' (even for a
     # microsecond) strands a poisoned module inside the host's import lock
     # ('tools' is not a package — the boot crash class).
-    _bare_host_pkg = bool(sys.modules.get(name)) and getattr(
-        sys.modules.get(name), "__path__", None) and not _mine(
-        sys.modules[name])
-    for candidate in (f"{_PKG}.{name}" if _PKG else None,
-                      f"_mnemo2_impl_{name}", name):
-        if candidate and candidate in sys.modules and _mine(sys.modules[candidate]):
-            if candidate == name and _bare_host_pkg:
-                continue  # stale OURS binding under a now-host-owned key
-            cand = sys.modules[candidate]
-            # CONCURRENT-REGISTER GATE (R8): a concurrent register()'s
-            # purge deletes the key while another thread is mid
-            # exec_module on the SAME object — the binding is ours but
-            # an attribute-less stub. Serve the fully-executed twin from
-            # the identity registry instead; a stub is never returned
-            # (the "'_mnemo2_impl_plugin_entry' has no attribute
-            # 'register'" race class).
-            if _is_ready(name, cand):
-                return cand
-            twin = _published().get(f"_mnemo2_impl_{name}")
-            if (twin is not None and twin is not cand and _mine(twin)
-                    and _is_ready(name, twin)):
-                return twin
-            # stub with no twin: fall through to the rebuild path below
-            break
-    if not os.path.isfile(path):
-        raise ImportError(f"mnemo-pg2: {filename}.py not found in {_HERE}")
-    full = f"_mnemo2_impl_{name}"
-    mod = sys.modules.get(full)
-    _pub_cell = _published()
-    if mod is None:
-        # Fast candidate loop skipped this key. Two legitimate reasons a
-        # fully-built module may sit in the identity registry: (a) a
-        # concurrent register() PURGE deleted the binding (purge removes
-        # sys.modules keys, never registry entries); (b) an earlier exec
-        # published a DIFFERENT object under the package-qualified alias
-        # and the registry kept the newest. Reuse only if the registry
-        # module is fully executed (attribute-complete).
-        cand = _pub_cell.get(full)
-        if cand is not None and _mine(cand):
-            _ready = (hasattr(cand, "anchor") if name == "_selfimport"
-                      else hasattr(cand, "register") if name == "plugin_entry"
-                      else True)
-            if _ready:
-                mod = cand
-                sys.modules[full] = mod
-    if mod is None and full in _pub_cell and _mine(_pub_cell[full]):
-        # the fast candidate loop lost the key to a concurrent register()
-        # PURGE (purge deletes sys.modules keys but not the identity
-        # registry): the registry holds the fully-executed module object —
-        # reuse it, and re-attach the binding for sibling imports.
-        mod = _pub_cell[full]
-        if mod is not None and (hasattr(mod, "anchor") or name !=
-                                "_selfimport"):
-            sys.modules[full] = mod
-            if name != "_selfimport" and not hasattr(mod, "anchor"):
-                pass  # plugin_entry stub mid-exec: fall through, rebuild
-        else:
-            mod = None
-    if mod is None or (mod is not _pub_cell.get(full) and not _mine(mod)):
-        if mod is not None and mod is not _pub_cell.get(full) \
-                and not _mine(mod):
+    # Lock cell located by KEY (never `import`) so every loader copy of
+    # this file serializes on the SAME lock; the gate below is checked
+    # UNDER the lock (no TOCTOU). Re-entrant: anchor() nests through
+    # sibling imports' finders, never self-deadlocks.
+    _lk = _anchor_lock()
+    with _lk:
+        _bare_host_pkg = bool(sys.modules.get(name)) and getattr(
+            sys.modules.get(name), "__path__", None) and not _mine(
+            sys.modules[name])
+        for candidate in (f"{_PKG}.{name}" if _PKG else None,
+                          f"_mnemo2_impl_{name}", name):
+            if candidate and candidate in sys.modules and _mine(sys.modules[candidate]):
+                if candidate == name and _bare_host_pkg:
+                    continue  # stale OURS binding under a now-host-owned key
+                cand = sys.modules[candidate]
+                # CONCURRENT-REGISTER GATE (R8): a concurrent register()'s
+                # purge deletes the key while another thread is mid
+                # exec_module on the SAME object — the binding is ours but
+                # an attribute-less stub. Serve the fully-executed twin from
+                # the identity registry instead; a stub is never returned
+                # (the "'_mnemo2_impl_plugin_entry' has no attribute
+                # 'register'" race class).
+                if _is_ready(name, cand):
+                    return cand
+                twin = _published().get(f"_mnemo2_impl_{name}")
+                if (twin is not None and twin is not cand and _mine(twin)
+                        and _is_ready(name, twin)):
+                    return twin
+                # stub with no twin: fall through to the wait/rebuild path
+                break
+        if not os.path.isfile(path):
+            raise ImportError(f"mnemo-pg2: {filename}.py not found in {_HERE}")
+        full = f"_mnemo2_impl_{name}"
+        mod = sys.modules.get(full)
+        _pub_cell = _published()
+        if mod is None:
+            # Fast candidate loop skipped this key. Two legitimate reasons a
+            # fully-built module may sit in the identity registry: (a) a
+            # concurrent register() PURGE deleted the binding (purge removes
+            # sys.modules keys, never registry entries); (b) an earlier exec
+            # published a DIFFERENT object under the package-qualified alias
+            # and the registry kept the newest. Reuse only if the registry
+            # module is fully executed (attribute-complete).
+            cand = _pub_cell.get(full)
+            if _ready_module(name, cand):
+                return _serve(name, cand)
+        if mod is None and full in _pub_cell and _mine(_pub_cell[full]):
+            # the fast candidate loop lost the key to a concurrent register()
+            # PURGE (purge deletes sys.modules keys but not the identity
+            # registry): the registry holds the fully-executed module object —
+            # reuse it, and re-attach the binding for sibling imports.
+            cand = _pub_cell[full]
+            if cand is not None and _is_ready(name, cand):
+                return _serve(name, cand)
+        # R8 (P3STEP4) EXEC-IN-FLIGHT GATE: an OURS module object under our
+        # key that is NOT yet ready is being executed RIGHT NOW by another
+        # thread (exec_module of a fresh stub, or a rebuild in flight).
+        # Never exec a live module a second time (re-running top-level code
+        # clears its dict — sibling loops die KeyError('engine'/'embed'))
+        # and never return a stub. Serialize: wait for the in-flight exec
+        # to finish (lock is held across every exec, so the waiter's next
+        # look sees the finished module), then serve whichever fully-
+        # executed object exists. Executor died -> rebuild fresh below.
+        _inflight = [m for m in (mod, _pub_cell.get(full))
+                     if m is not None and _mine(m) and not _is_ready(name, m)]
+        if _inflight and _settle_stubs(name):
+            for cand in (sys.modules.get(full), _pub_cell.get(full)):
+                if _ready_module(name, cand):
+                    return _serve(name, cand)
+        if mod is not None and not _mine(mod):
             # Foreign binding under a namespaced OURS key: not ours to
             # keep (P2FLIP3 discipline — never adopt, never overwrite a
             # live host-PACKAGE binding; rebuild ours by file).
             sys.modules.pop(full, None)
-            _pub_cell.pop(full, None)  # dead stub OUT of the registry
-            # too: the sibling-key loop above already ruled the binding
-            # foreign-adopted; an entry left here would hand the NEXT
-            # anchor() a stub that only looks OURS by __file__.
-        # mid-exec stub: a concurrent purge deleted the key WHILE another
-        # thread was exec_module-ing our file into it (exec never re-
-        # checks sys.modules): the binding is OUR object with OUR file
-        # but ZERO attributes. Registry membership proves the object is
-        # OURS; reuse only a fully-executed module, else rebuild.
-        if mod is not None and _mine(mod):
-            if _is_ready(name, mod):
-                return mod
-            # ours-by-file but INCOMPLETE (purged mid-exec stub): drop it
-            # from key AND registry — never return, never keep a stub
-            # that only looks OURS by __file__ (the 'no attribute
-            # register' race class). Rebuild fresh below.
+            _pub_cell.pop(full, None)  # dead stub OUT of the registry too:
+            # an entry left here would hand the NEXT anchor() a stub that
+            # only looks OURS by __file__.
+            mod = None
+        elif mod is not None and _mine(mod) and not _is_ready(name, mod):
+            # ours-by-file but INCOMPLETE and the waiter above timed out
+            # (dead executor): drop it from key AND registry — never
+            # return, never keep a stub that only looks OURS by __file__.
             sys.modules.pop(full, None)
             _pub_cell.pop(full, None)
             mod = None
         spec = importlib.util.spec_from_file_location(full, path)
-        if spec is None or spec.loader is None:
+        if spec is None or spec.loader is None:  # pragma: no cover
             raise ImportError(f"mnemo-pg2: cannot build spec for {path}")
         # The target module's OWN bare sibling imports (tools -> engine ->
         # pgconn...) must resolve to our files. NEVER insert _HERE into
