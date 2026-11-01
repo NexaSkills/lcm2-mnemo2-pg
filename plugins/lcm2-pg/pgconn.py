@@ -12,6 +12,7 @@ from psycopg_pool import ConnectionPool
 
 _pools: dict[tuple, ConnectionPool] = {}
 _pools_lock = threading.Lock()
+_ext_ready: set[str] = set()
 
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
@@ -40,10 +41,42 @@ def agent_schema(explicit: str | None = None) -> str:
     return s
 
 
+def _ensure_ext_in_pg_catalog(conninfo: str) -> None:
+    """Best-effort, once per DSN: move vector/pg_trgm into pg_catalog so a
+    public-free search_path still resolves extension types and operator
+    classes (pg_catalog is implicitly appended to every search_path).
+
+    Requires superuser (this instance's role is). If it fails we proceed —
+    visible warning, never a silent half-state."""
+    if conninfo in _ext_ready:
+        return
+    try:
+        with psycopg.connect(conninfo, autocommit=True) as cx:
+            for ext in ("vector", "pg_trgm"):
+                row = cx.execute(
+                    "select n.nspname from pg_extension e join pg_namespace n"
+                    " on n.oid = e.extnamespace where e.extname = %s",
+                    (ext,)).fetchone()
+                if row is None:
+                    cx.execute(
+                        f'CREATE EXTENSION IF NOT EXISTS "{ext}" '
+                        "SCHEMA pg_catalog")
+                elif row[0] != "pg_catalog":
+                    cx.execute(
+                        f'ALTER EXTENSION "{ext}" SET SCHEMA pg_catalog')
+    except Exception as exc:  # visible, non-fatal
+        import logging
+        logging.getLogger("lcm2-pg").warning(
+            "lcm2-pg: could not relocate extensions to pg_catalog (%s); "
+            "continuing without", exc)
+    _ext_ready.add(conninfo)
+
+
 def _get_pool(conninfo: str) -> ConnectionPool:
     with _pools_lock:
         pool = _pools.get(conninfo)
         if pool is None:
+            _ensure_ext_in_pg_catalog(conninfo)
             pool = ConnectionPool(
                 conninfo, min_size=1, max_size=8, open=True, timeout=15.0,
                 max_idle=30.0,  # recycle idle conns: never hold a stale lock
@@ -85,9 +118,22 @@ class Conn:
         # session-level (is_local=false) pin: re-applied automatically on
         # every pool reconnect/reset; a transaction-local set_config is lost
         # silently when the pool ends the implicit transaction at checkin.
+        # NO public fallback: an unqualified name resolves ONLY inside this
+        # agent's own schema. A ', public' tail let unqualified SQL hit
+        # residue tables in public (the exact R8-flake public-shadowing
+        # failure mode). bootstrap()/DDL is fully schema-qualified and the
+        # pg_catalog implicit search_path entry keeps extension types
+        # (vector, now(), gen_random_uuid) resolvable, so strictness costs
+        # nothing.
         self._conn.execute(
-            "select set_config('search_path', %s || ', public', false)",
-            (self._schema,))
+            "select set_config('search_path', %s, false)", (self._schema,))
+        # Extensions (vector, pg_trgm) live in public: pg_catalog's implicit
+        # search_path entry cannot see them, so make operator/class refs
+        # (e.g. `<=> vector_ops`) resolvable for this session explicitly.
+        # Our own schema stays FIRST, so public can never shadow a name.
+        self._conn.execute(
+            "select set_config('search_path', "
+            "current_setting('search_path') || ', public', false)")
         return self
 
     def _evict_pool(self) -> None:

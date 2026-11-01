@@ -14,7 +14,18 @@ import os
 import time
 from datetime import datetime, timezone
 
-import pgconn
+try:  # file-anchored: never bind a host-root package that owns the bare name
+    from _selfimport import anchor as _anchor
+except ImportError:  # pragma: no cover - _HERE is always on sys.path via __init__
+    _anchor = None
+
+def _sib(name):
+    if _anchor is not None:
+        return _anchor(name)
+    import importlib
+    return importlib.import_module(name)
+
+import pgconn  # noqa: E402  (resolved last-resort; engine funcs use _sib at call time)
 
 logger = logging.getLogger("lcm2-pg")
 
@@ -57,7 +68,41 @@ def _model_summary(items: list[tuple[str, str]]) -> str | None:
 
 
 class LCM2Engine:
-    """Context engine bound to one profile: schema lcm2_<agent> on lcm2db."""
+    """Context engine bound to one profile: schema lcm2_<agent> on lcm2db.
+
+    Duck-typed against agent.context_engine.ContextEngine: it satisfies the
+    host protocol (name, token-state fields, update_from_response,
+    should_compress, compress, get_tool_schemas, handle_tool_call,
+    on_session_start, get_status, clone_for_agent, update_model) WITHOUT
+    importing it: the plugin never imports host modules (R3 isolation). The
+    host's isinstance() gate in ctx.register_context_engine therefore rejects
+    a shared global registration; the sanctioned host-native path is
+    context.engine: lcm2-pg -> plugins/context_engine/lcm2-pg/ (shim that
+    subclasses the base and reuses these methods), proven by the R12 suite.
+    """
+
+    name = "lcm2-pg"  # host-facing engine id (context.engine value)
+
+    # host token-state fields (run_agent.py reads these directly)
+    last_prompt_tokens: int = 0
+    last_completion_tokens: int = 0
+    last_total_tokens: int = 0
+    threshold_tokens: int = 0
+    context_length: int = 0
+    compression_count: int = 0
+    threshold_percent: float = DEFAULT_THRESHOLD
+
+    # Compaction-shape fields the host's preflight reads off
+    # agent.context_compressor as BARE attributes (turn_context_compaction.py:
+    # protect_first_n/protect_last_n/threshold_tokens/summary_target_ratio/
+    # last_real_prompt_tokens). agent.context_engine.ContextEngine cannot be
+    # inherited without a host import (R3), so we mirror the base-class
+    # defaults verbatim (protect_first_n=3, protect_last_n=6) plus the fields
+    # ContextCompressor carries that the same code paths read.
+    protect_first_n: int = 3
+    protect_last_n: int = 6
+    emit_automatic_compaction_status: bool = True
+    summary_target_ratio: float = 0.2  # ContextCompressor default (idle floor)
 
     def __init__(self, dsn: str | None = None, schema: str | None = None):
         self.dsn = dsn or pgconn.default_dsn()
@@ -232,9 +277,139 @@ class LCM2Engine:
     # the tool surface lives in tools.py; thin delegates here so tests and
     # register() hit the same callables:
     def tools_lcm_grep(self, args):
-        import tools
-        return tools.lcm_grep(args, engine=self)
+        from _selfimport import anchor
+        return anchor("tools").lcm_grep(args, engine=self)
 
     def tools_lcm_expand(self, args):
-        import tools
-        return tools.lcm_expand(args, engine=self)
+        from _selfimport import anchor
+        return anchor("tools").lcm_expand(args, engine=self)
+
+    # -- host ContextEngine protocol (duck-typed; no host imports, R3) --
+    # Bare attributes the host's compression paths read via getattr() on
+    # agent.context_compressor (conversation_compression.py /
+    # turn_context_compaction.py: last_real_prompt_tokens is read UNGUARDED
+    # in a log line). Absent attributes were the F1 host-real crash
+    # ('LCM2Engine' object has no attribute 'protect_first_n'); getattr-only
+    # reads degrade to falsy defaults, so plain class-level defaults suffice.
+    last_real_prompt_tokens: int = 0
+    model_thresholds: dict = {}
+    _config_context_length: int = 0
+    _last_compress_refused_would_grow: bool = False
+    _last_compress_aborted: bool = False
+    _last_summary_error: str | None = None
+
+    def update_from_response(self, usage: dict) -> None:
+        self.last_prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        self.last_completion_tokens = int(usage.get("completion_tokens") or 0)
+        self.last_total_tokens = int(usage.get("total_tokens") or 0)
+        self.last_real_prompt_tokens = self.last_prompt_tokens
+
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
+        pt = prompt_tokens if prompt_tokens is not None \
+            else self.last_prompt_tokens
+        return bool(self.context_length
+                    and pt >= self.threshold_tokens > 0)
+
+    def compress(self, messages, current_tokens=None, focus_topic=None,
+                 force=False, memory_context=""):
+        """Persist every OpenAI-format message into the store (lossless) and
+        run the DAG compression for this session. The transcript list is
+        returned UNMODIFIED: nothing is removed from the live context —
+        store-side compaction is the product (summaries stay retrievable via
+        the lcm_* tools)."""
+        sid = self._session_from_env()
+        for m in messages or []:
+            role = m.get("role") or "user"
+            content = m.get("content")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False,
+                                     default=str) if content else ""
+            self.ingest(sid, role, content,
+                        tool_calls=m.get("tool_calls"),
+                        tool_name=m.get("name"),
+                        tool_call_id=m.get("tool_call_id"))
+        res = self.maybe_compress(sid)
+        if res.get("compressed"):
+            self.compression_count += 1
+        return list(messages or [])
+
+    def should_compress_preflight(self, messages) -> bool:
+        return True
+
+    def has_content_to_compress(self, messages) -> bool:
+        return bool(messages)
+
+    def prune_tool_results_only(self, messages, current_tokens=None):
+        return messages, 0
+
+    def on_turn_complete(self, messages, usage=None, **kwargs) -> None:
+        try:
+            self.maybe_compress(self._session_from_env())
+        except Exception as exc:  # never break the host turn
+            logger.warning("lcm2-pg on_turn_complete: %s", exc)
+
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        self._pinned_session = session_id
+
+    def on_session_reset(self) -> None:
+        self._pinned_session = ""
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self.last_total_tokens = 0
+        self.compression_count = 0
+
+    def _session_from_env(self) -> str:
+        return (getattr(self, "_pinned_session", "")
+                or os.environ.get("HERMES_SESSION_ID") or "default")
+
+    def get_tool_schemas(self) -> list:
+        import schemas
+        return [schemas.TOOLS[n] for n in sorted(schemas.TOOLS)]
+
+    def handle_tool_call(self, name: str, args: dict, **kwargs) -> str:
+        # NEVER import the bare name `tools` here: the host root and other
+        # plugin dirs also own a top-level `tools` module, and under the
+        # context-engine loader a bare import can resolve to a FOREIGN one
+        # (every tool then answers "Unknown context engine tool"). Resolve
+        # OUR OWN tools.py by file location, like pgconn._own_ddl().
+        T = self._own_tools()
+        fn = getattr(T, name, None)
+        if fn is None or not callable(fn) or not name.startswith("lcm_"):
+            return json.dumps({"error": f"Unknown context engine tool: {name}"})
+        try:
+            out = fn(args or {}, engine=self)
+            return out if isinstance(out, str) else json.dumps(
+                {"result": out}, default=str)
+        except Exception as exc:  # well-formed JSON, never a crash
+            return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+                               "implementation": "lcm2-pg/native"})
+
+    _tools_mod = None
+
+    def _own_tools(self):
+        import importlib.util
+        import pathlib
+        import sys
+        path = pathlib.Path(__file__).resolve().parent / "tools.py"
+        mod = LCM2Engine.__dict__.get("_tools_mod")
+        if mod is not None and getattr(mod, "__file__", None) and \
+                pathlib.Path(mod.__file__).resolve() == path:
+            return mod
+        spec = importlib.util.spec_from_file_location(
+            "lcm2_pg_plugin_tools", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["lcm2_pg_plugin_tools"] = mod
+        spec.loader.exec_module(mod)
+        LCM2Engine._tools_mod = mod
+        return mod
+
+    def clone_for_agent(self):
+        """Fresh engine sharing the durable backend (no deepcopy of pools)."""
+        return LCM2Engine(dsn=self.dsn, schema=self.schema)
+
+    def update_model(self, model: str, context_length: int, base_url: str = "",
+                     api_key: str = "", provider: str = "",
+                     api_mode: str = "") -> None:
+        self.context_length = int(context_length or 0)
+        self.threshold_tokens = int(self.context_length
+                                    * self._threshold())

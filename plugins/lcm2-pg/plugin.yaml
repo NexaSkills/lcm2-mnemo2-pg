@@ -1,4 +1,30 @@
 name: lcm2-pg
-version: 0.1.0
-description: "LCM2 — lossless context management, PG-native (lcm2-mnemo2-redesign). Phase-1 skeleton."
+version: 0.2.0
+description: "LCM2 — lossless context management, PG-native (lcm2-mnemo2-redesign)."
 author: "NexaSkills (upstream reference: stephenschoettler/hermes-lcm)"
+# R4/F1 host tool surface: provides_tools names the 15 vendor tools for
+# `hermes tools` / toolset resolution / tool_search listings (the manifest
+# field the loader reads for opt-in). The REAL input schemas live in
+# schemas.py and reach the model natively through the context-engine path:
+# LCM2Engine.get_tool_schemas() (agent_init._inject_context_engine_tools).
+# Registering under toolset "context_engine" is the same toolset the vendor
+# declares, so no privileged built-in is shadowed (no override needed).
+# Bare-env note: with no HERMES_HOME, pgconn.agent_schema() derives
+# lcm2_default and engine bootstrap creates it on first connect (schema
+# derivation is by HERMES_HOME, never pinned).
+provides_tools:
+  - lcm_grep
+  - lcm_recall
+  - lcm_query_state
+  - lcm_compute
+  - lcm_compile_evidence
+  - lcm_evidence_pack
+  - lcm_retrieve
+  - lcm_recent
+  - lcm_load_session
+  - lcm_describe
+  - lcm_expand
+  - lcm_expand_query
+  - lcm_status
+  - lcm_inspect
+  - lcm_doctor
