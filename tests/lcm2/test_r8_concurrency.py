@@ -6,6 +6,7 @@ test (rows tagged with a unique run-id and removed after; the agents' real
 rows are untouched).
 """
 import multiprocessing as mp
+import multiprocessing.context
 import os
 import uuid
 
@@ -34,6 +35,9 @@ def _setup():
 def _worker(args):
     schema, wid, n = args
     try:
+        # fresh connections in this worker only: never reuse a pool object
+        # inherited across fork() (its sockets belong to the parent)
+        pgconn.shutdown_pools()
         with pgconn.connect(DSN, schema) as cx:
             for i in range(n):
                 cx.execute(
@@ -47,7 +51,7 @@ def _worker(args):
 def test_parallel_writes_and_integrity():
     _setup()
     jobs = [(s, w, ROWS) for s in SCHEMAS for w in range(WORKERS)]
-    with mp.Pool(8) as pool:
+    with mp.get_context("spawn").Pool(8) as pool:
         results = pool.map(_worker, jobs)
     assert all(r[3] is None for r in results), results
     with pgconn.connect(DSN, "public") as cx:

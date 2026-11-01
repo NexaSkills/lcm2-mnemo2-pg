@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import threading
 
 import psycopg
@@ -47,6 +48,7 @@ def _get_pool(conninfo: str) -> ConnectionPool:
                 conninfo, min_size=1, max_size=8, open=True, timeout=15.0,
                 max_idle=30.0,  # recycle idle conns: never hold a stale lock
                 kwargs={"row_factory": dict_row, "autocommit": True,
+                        "prepare_threshold": None,  # no PREPARE: fork-safe (R8)
                         "application_name": "lcm2-pg"},
             )
             _pools[conninfo] = pool
@@ -120,10 +122,28 @@ class Conn:
         return next(iter(row.values())) if row else None
 
     # -- bootstrap ------------------------------------------------------
+    def _own_ddl(self):
+        """Always our OWN ddl module, resolved by file location.
+
+        'ddl' is a collision-prone top-level name: another suite on the
+        same interpreter (mnemo-pg2 tests) can leave a different ddl module
+        in sys.modules, and a plain `import ddl` would silently use it.
+        """
+        import importlib.util
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parent / "ddl.py"
+        mod = sys.modules.get("ddl")
+        if mod is not None and getattr(mod, "__file__", None) and \
+                pathlib.Path(mod.__file__).resolve() == path:
+            return mod
+        spec = importlib.util.spec_from_file_location("ddl", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules["ddl"] = mod  # keep the conventional name for tools.py
+        return mod
+
     def bootstrap(self) -> None:
-        # import here as a module object (patch-friendly, no name binding)
-        import ddl as _ddl
-        _ddl.apply_schema(self)
+        self._own_ddl().apply_schema(self)
 
 
 def connect(dsn: str | None, schema: str | None = None, ddl: bool = False) -> Conn:
