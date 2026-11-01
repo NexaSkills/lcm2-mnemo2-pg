@@ -37,12 +37,11 @@ sys.path or leaves a bare-name publication behind.
 """
 from __future__ import annotations
 
+import importlib as _ilib
 import importlib.abc as _ilabc
-import importlib.machinery as _ilmach
 import importlib.util as _ilu
 import os as _os
 import sys as _sys
-import threading as _threading
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _PKG_MODULES = ("plugin_entry", "tools", "hooks", "schemas", "engine",
@@ -128,14 +127,6 @@ if _bridge is not None:  # marker: class present => loader uses the bridge
     LCM2PgContextEngine = _bridge.LCM2PgContextEngine
 
 
-def _is_ours(name):
-    m = _sys.modules.get(name)
-    f = getattr(m, "__file__", None) if m is not None else None
-    if not isinstance(f, str):
-        return False
-    return _os.path.dirname(_os.path.realpath(f)) == _os.path.realpath(_HERE)
-
-
 def _ours_bound(name):
     """True if module bound under key `name` resolves into OUR dir."""
     m = _sys.modules.get(name)
@@ -149,6 +140,64 @@ def _ours_bound(name):
         return False
 
 
+def _selfimport_module():
+    """Our _selfimport.py by FILE under the namespaced key
+    _lcm2_impl__selfimport. The register() purge DELETES the bare
+    '_selfimport' key (boot hygiene), so every LATER call from host
+    frames (hooks dispatching a turn) must resolve anchor() through a
+    loader bound to our package, never the bare name. Package-relative
+    import keeps _selfimport's own _PKG bookkeeping identical to the
+    exec-window route (F-2 fix route b: package-qualified resolution).
+    Falls back to the engine.py-maintained alias key, then to spec-by-
+    file, so it works standalone too."""
+    pkg = __package__ or ""
+    if pkg:
+        try:
+            return _ilib.import_module(f"{pkg}._selfimport")
+        except Exception:
+            pass
+    m = _sys.modules.get("_lcm2_impl__selfimport")
+    if m is not None and getattr(m, "anchor", None) is not None:
+        return m
+    spec = _ilu.spec_from_file_location(
+        "_lcm2_impl__selfimport", _os.path.join(_HERE, "_selfimport.py"))
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise ImportError(f"lcm2-pg: _selfimport.py missing in {_HERE}")
+    mod = _ilu.module_from_spec(spec)
+    _sys.modules["_lcm2_impl__selfimport"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _anchor(name):
+    """Sibling module by file via _selfimport.anchor() resolved through a
+    name that survives the register() purge (F-2: the bare '_selfimport'
+    key is deleted at boot hygiene, so late calls from host frames use
+    the package-qualified / namespaced routes in _selfimport_module())."""
+    return _selfimport_module().anchor(name)
+
+
+def _sibling(name):
+    """Module binding for a late (post-register, host-origin) call: OUR
+    file-anchored module always. sys.modules FIRST (the same identity
+    register()'s exec-time anchor published — one code path, one module),
+    then a pure package-qualified import (publishes only under OUR
+    package name, no bare name), then anchor() as last resort. Never a
+    plain bare `import <name>`: after the purge that binds the HOST's
+    package (F-2 'context engine that does not inherit' / 'Unknown
+    context engine tool' class of bug)."""
+    m = _sys.modules.get(name)
+    if _ours_bound(name):
+        return m
+    pkg = __package__ or ""
+    if pkg:
+        try:
+            return _ilib.import_module(f"{pkg}.{name}")
+        except Exception:
+            pass
+    return _anchor(name)
+
+
 def register(ctx, engine_factory=None):
     """General plugin registration: tools + hooks + /lcm command + skills.
 
@@ -159,45 +208,20 @@ def register(ctx, engine_factory=None):
     sys.path entry is ever added or removed.
     """
     saved_mods = dict(_sys.modules)
-    for n in _PKG_MODULES:  # evict foreign bare holders for OUR dir's names
-        if n in _sys.modules and not _is_ours(n):
-            _sys.modules.pop(n, None)
     _disarm = _engage()  # bare sibling imports -> our files, by file
-    _stop = _threading.Event()
-
-    def _revert_loop():
-        # While our register() runs, the HOST boot imports concurrently in
-        # other threads (plugin loader worker vs CLI/skills-sync). Our
-        # anchor()/_sib helpers prepend _HERE to the (global) sys.path for
-        # the duration of an exec, and a concurrent host `import tools`
-        # landing in that window binds OUR flat tools.py — the boot crash
-        # "'tools' is not a package". Our own restore (finally-block) is
-        # byte-exact but happens-earlier than such a late host import.
-        # This daemon re-applies the pre-register snapshot for the *names
-        # our exec owns* every 1 ms until register() returns, so a late
-        # racer sees the host's bindings again before it resolves them.
-        while not _stop.wait(0.001):
-            try:
-                if _HERE in _sys.path:
-                    _sys.path[:] = saved_path
-                for n in _PKG_MODULES:
-                    if n in _sys.modules and _is_ours(n):
-                        if n in saved_mods:
-                            _sys.modules[n] = saved_mods[n]
-                        else:
-                            del _sys.modules[n]
-            except Exception:
-                return
-
-    _watch = _threading.Thread(target=_revert_loop, daemon=True,
-                              name="lcm2-pg:restore-watch")
-    _watch.start()
+    # (F1 FIX-3: the old preemptive eviction loop for foreign bare holders
+    # and the 1 ms _revert_loop restore-watch thread are GONE. Both widened
+    # the race window: evicting a host binding it did not own made a
+    # concurrent host `import tools.<sub>` see a half-restored sys.modules,
+    # stranding 'tools' as non-package. The origin-gated _SelfImportFinder
+    # (above) is the whole mechanism: nothing here edits sys.path or
+    # removes foreign keys, so no racer can observe a foreign-bound bare
+    # name as OUR file.)
     try:
         from _selfimport import anchor
         pe = anchor("plugin_entry")
         return pe.register(ctx, engine_factory=engine_factory)
     finally:
-        _stop.set()
         _disarm()
         # 1. purge keys our exec CREATED that bind to OUR files
         for k in set(_sys.modules) - set(saved_mods):
