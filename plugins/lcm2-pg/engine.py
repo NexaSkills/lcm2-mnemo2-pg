@@ -23,13 +23,19 @@ except ImportError:  # pragma: no cover - _HERE is always on sys.path via __init
 def _late(name):
     """Sibling module for LATE (post-register, host-origin) calls. The F1
     purge deletes the bare '_selfimport' key, so fall back to OUR package
-    __init__'s resolver (package-qualified; F-2 fix route b)."""
+    __init__'s resolver (package-qualified; F-2 fix route b). The
+    module-namespace loader route (no package, no bare key) keeps the
+    legacy importlib last-resort."""
     try:
         from _selfimport import anchor
         return anchor(name)
     except Exception:
-        import __init__ as _pkg  # only ever OUR package __init__
-        return _pkg._sibling(name)
+        try:
+            import __init__ as _pkg  # only ever OUR package __init__
+            return _pkg._sibling(name)
+        except Exception:
+            import importlib
+            return importlib.import_module(name)
 
 
 def _sib(name):
