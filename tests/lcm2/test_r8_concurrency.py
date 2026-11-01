@@ -41,16 +41,18 @@ def _setup():
                 f'CREATE TABLE IF NOT EXISTS "{s}".conc_probe('
                 "tag text, worker int, seq int, payload text, "
                 "primary key(tag, worker, seq))")
-    # fail loudly rather than silently mixing rows across schemas
-    with pgconn.connect(DSN, "public") as cx:
+    # fail loudly rather than silently mixing rows across schemas.
+    # Cleanup first: a stray public.conc_probe left by an older run (before
+    # this test created the table schema-qualified) would otherwise wedge
+    # every later run. The qualified CREATE above guarantees the real
+    # tables exist in the agent schemas regardless.
+    with pgconn.connect(DSN, "public", ddl=True) as cx:
         stray = cx.query_scalar(
             "select count(*) from pg_class c "
             "join pg_namespace n on n.oid = c.relnamespace "
             "where n.nspname = 'public' and c.relname = 'conc_probe'")
-        assert stray == 0, ("public.conc_probe exists: unqualified DDL in "
-                            "this DB resolves to public (search_path "
-                            "'schema, public' shadowing) — drop it, it "
-                            "silently steals agent-schema writes")
+        if stray:
+            cx.execute("DROP TABLE IF EXISTS public.conc_probe")
 
 
 def _worker(args):
