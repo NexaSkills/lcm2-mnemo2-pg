@@ -15,7 +15,21 @@ import uuid
 from datetime import datetime, timezone
 
 import pgconn
-import embed as _embed
+try:  # sibling import inside OUR body: _SelfImportFinder serves OUR file
+    import embed as _embed
+except ModuleNotFoundError:  # direct-by-path load (tests/probes): locate
+    # by FILE next to this module — never a cwd- or sys.path-dependent
+    # hack, and still zero bare-name publication outside the anchor
+    # discipline.
+    import importlib.util as _ilu
+    import os as _os
+    _p = _ilu.spec_from_file_location(
+        "mnemo2_embed_here", _os.path.join(
+            _os.path.dirname(_os.path.abspath(__file__)), "embed.py"))
+    if _p is None or _p.loader is None:  # pragma: no cover
+        raise ImportError("mnemo-pg2: embed.py missing next to engine.py")
+    _embed = _ilu.module_from_spec(_p)
+    _p.loader.exec_module(_embed)
 
 DEFAULT_VEC_W = 0.5
 DEFAULT_FTS_W = 0.3
@@ -503,6 +517,10 @@ class Engine:
         if len(operations) > 50:
             return {"ok": False, "error": "max 50 operations"}
         results = []
+        # ONE PG transaction: any failing op rolls the whole batch back
+        # (native-strength atomicity, spec §6). psycopg only opens a real
+        # transaction at first execute, so a poisoned op AFTER N writes
+        # still discards them all.
         with self._cx(ddl=True) as cx:
             if dry_run:
                 cx.execute("SAVEPOINT batch")
@@ -521,6 +539,14 @@ class Engine:
                     cx.execute("ROLLBACK")
                     return {"ok": False, "rolled_back": True,
                             "failed_index": i, "error": str(exc),
+                            "results": results}
+                if not r.get("ok") and not dry_run:
+                    # op-shaped failure (not an exception) — same contract:
+                    # a failing op fails the batch, never a partial apply.
+                    cx.execute("ROLLBACK")
+                    return {"ok": False, "rolled_back": True,
+                            "failed_index": i,
+                            "error": r.get("error", "op failed"),
                             "results": results}
             if dry_run:
                 cx.execute("ROLLBACK TO SAVEPOINT batch")
