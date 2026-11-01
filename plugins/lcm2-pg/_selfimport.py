@@ -36,12 +36,14 @@ HOST_BARE = {"tools", "engine", "pgconn", "schemas", "command", "hooks",
 class _SibFinder:
     """Serve OUR bare sibling imports from OUR dir WITHOUT sys.path.
 
-    Installed for the duration of an anchor() exec only. Serves exactly
-    the plugin's own module names and nothing else; a host-origin import
-    that reaches here while we're mid-exec still resolves correctly (the
-    name it asks for is one of OURS by definition of this window, and
-    sys.modules was just checked by the import machinery before finders
-    run).
+    Installed for the duration of an anchor() exec only. Origin-gated
+    (F1): a MetaPathFinder serves EVERY import in the process, including
+    a HOST thread's `import tools.<sub>` running concurrently with our
+    exec window. Serving that host import our flat tools.py strands it
+    ('tools' is not a package) — exactly the boot crash. So we only
+    answer when the import ORIGINATES inside our plugin dir (a frame
+    from this dir is on the importing stack); any other caller returns
+    None and the normal path finders serve it.
     """
 
     def find_spec(self, fullname, path=None, target=None):
@@ -49,11 +51,36 @@ class _SibFinder:
             return None
         if fullname not in _NAMES:
             return None
+        if not _origin_is_ours():
+            return None  # host-origin import: never hijack it (F1)
         import importlib.util
         f = os.path.join(_HERE, fullname + ".py")
         if not os.path.isfile(f):
             return None
         return importlib.util.spec_from_file_location(fullname, f)
+
+
+def _origin_is_ours():
+    """True if any frame on the current import stack belongs to a module
+    whose file is in OUR plugin dir (i.e. WE triggered this import)."""
+    try:
+        here = os.path.realpath(_HERE)
+    except Exception:
+        return False
+    try:
+        fr = sys._getframe(1)
+    except Exception:
+        return False
+    while fr is not None:
+        fn = getattr(fr, "f_globals", {}).get("__file__", "")
+        if isinstance(fn, str) and fn:
+            try:
+                if os.path.dirname(os.path.realpath(fn)) == here:
+                    return True
+            except Exception:
+                pass
+        fr = fr.f_back
+    return False
 
 
 _NAMES = {"plugin_entry", "tools", "hooks", "schemas", "engine", "command",
