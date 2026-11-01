@@ -287,16 +287,15 @@ def anchor(name: str, filename: str | None = None):
         # but ZERO attributes. Registry membership proves the object is
         # OURS; reuse only a fully-executed module, else rebuild.
         if mod is not None and _mine(mod):
-            if hasattr(mod, "anchor") or (name != "_selfimport"
-                                          and hasattr(mod, "register")):
+            if _is_ready(name, mod):
                 return mod
-            _pub_cell[full] = mod  # keep registry fresh either way
-            if full in _pub_cell and _pub_cell[full] is not mod \
-                    and hasattr(_pub_cell[full], "anchor"):
-                mod = _pub_cell[full]  # complete twin in registry: use it
-                sys.modules[full] = mod
-                return mod
-            return mod  # ours-by-file, incomplete, no twin: rebuild below
+            # ours-by-file but INCOMPLETE (purged mid-exec stub): drop it
+            # from key AND registry — never return, never keep a stub
+            # that only looks OURS by __file__ (the 'no attribute
+            # register' race class). Rebuild fresh below.
+            sys.modules.pop(full, None)
+            _pub_cell.pop(full, None)
+            mod = None
         spec = importlib.util.spec_from_file_location(full, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"mnemo-pg2: cannot build spec for {path}")
