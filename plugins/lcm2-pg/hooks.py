@@ -6,6 +6,18 @@ import json
 import logging
 import os
 
+def _anchor_late():
+    """anchor() for LATE (post-register, host-origin) calls: the F1 purge
+    deletes the bare '_selfimport' key, so fall back to OUR package
+    __init__'s resolver (package-qualified, survives the purge; F-2)."""
+    try:
+        from _selfimport import anchor
+        return anchor
+    except Exception:
+        import __init__ as _pkg  # only ever OUR package __init__
+        return _pkg._anchor
+
+
 try:  # file-anchored sibling (F1: a bare `import pgconn` under the
     from _selfimport import anchor as _anchor
     pgconn = _anchor("pgconn")  # context-engine module-namespace route
@@ -15,18 +27,11 @@ except Exception:              # every later import in the process
     _pgconn_bare = True
 
 def _pg():
-    """pgconn module, resolved lazily if the exec-time anchor failed.
-    Late (host-origin) calls resolve anchor() package-qualified via OUR
-    __init__ (F-2: the F1 purge deletes the bare '_selfimport' key)."""
+    """pgconn module, resolved lazily if the exec-time anchor failed."""
     global pgconn, _pgconn_bare
     if _pgconn_bare:
         try:
-            try:
-                from _selfimport import anchor
-            except Exception:
-                import __init__ as _pkg  # only ever OUR package __init__
-                anchor = _pkg._anchor
-            pgconn = anchor("pgconn")
+            pgconn = _anchor_late()("pgconn")
             _pgconn_bare = False
         except Exception:
             pass
@@ -50,6 +55,12 @@ def _session_id(payload: dict) -> str:
 def make_pre_llm_call(engine_factory):
     def _hook(**payload):
         try:
+            # F-2: route the WHOLE turn through the register()-bound
+            # engine closure. The host's context-engine slot may hold a
+            # module-identity DIFFERENT LCM2Engine (the CE-capture route);
+            # an ambient env or an injected engine from that other module
+            # would silently write elsewhere or fail. Same DSN/schema in
+            # practice; identical results, one code path.
             e = engine_factory()
             sid = _session_id(payload)
             msg = payload.get("user_message") or payload.get("message") or ""
