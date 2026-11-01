@@ -101,6 +101,37 @@ class LCM2PgContextEngine(ContextEngine):
         return self._impl.should_compress_info(prompt_tokens)
 
     def on_turn_complete(self, messages, usage=None, **kwargs):
+        # F-2 DURABLE INGEST: the host calls this with the full turn
+        # transcript (structural clones). Ingest any message we have not
+        # seen for this session yet; the pre_llm_call hook already wrote
+        # the current user leg (dedup via lcm_durable_state keeps it to
+        # one write per message). Fail-open like every other hook.
+        try:
+            impl = self._impl
+            sid = (kwargs.get("session_id")
+                   or _os.environ.get("HERMES_SESSION_ID") or "default")
+            try:
+                with impl._conn() as cx:
+                    rows = cx.query_dicts(
+                        "select role, content from messages"
+                        " where session_id=%s", (sid,))
+                seen = {(r["role"], r["content"]) for r in rows}
+            except Exception:
+                seen = set()
+            for m in messages or []:
+                role = m.get("role")
+                content = m.get("content")
+                if not isinstance(content, str) or not content:
+                    continue
+                if (role, content) in seen:
+                    continue
+                impl.ingest(sid, role, content,
+                            tool_calls=m.get("tool_calls") or None,
+                            tool_name=m.get("tool_name"),
+                            tool_call_id=m.get("tool_call_id"))
+                seen.add((role, content))
+        except Exception:
+            pass
         return self._impl.on_turn_complete(messages, usage, **kwargs)
 
     def on_session_start(self, session_id, **kwargs):
