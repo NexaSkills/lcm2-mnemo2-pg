@@ -5,3 +5,6 @@ __pycache__/
 # (never intended for git; lint noise; gitignored instead of committed)
 diag_*.py
 
+# ad-hoc diagnostic probes (never part of the suite)
+scratch/
+scripts/run_r8.py
