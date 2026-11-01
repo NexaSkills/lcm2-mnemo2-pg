@@ -286,21 +286,22 @@ def anchor(name: str, filename: str | None = None):
 
 
 def release(name: str, publish: bool = False) -> None:
-    """Undo anchor()'s publication for `name`: drop our registrations and
-    restore whatever foreign module was evicted (host code keeps its
-    module objects either way).
+    """Undo anchor()'s publication for `name`: drop OUR registrations and
+    restore whatever foreign module was evicted. Under the P2FLIP publish
+    rule anchor() never evicts a HOST-OWNED bare key (a foreign binding
+    under such a key was never ours to take), so the restore loop only
+    ever reinstates what we legitimately displaced in the standalone
+    world; package-qualified and _lcm2_impl_ keys are ours to delete.
 
-    publish=True is the at-exit variant: the bare name still resolves to
-    OUR module (a plain import inside our module bodies stays correct)
-    and no foreign module is force-restored; the eviction bookkeeping is
-    just cleared. Without it the host's evicted bindings come back.
+    publish=True is the at-exit variant: keep our registrations, just
+    clear the eviction bookkeeping.
     """
     mod = sys.modules.get(name)
     if mod is None or not _mine(mod):
         mod = sys.modules.get(f"_lcm2_impl_{name}")
     evicted = getattr(mod, "_lcm2_evicted", {}) if mod else {}
     if publish:
-        # Keep our bare registrations in place; nothing to restore.
+        # Keep our registrations in place; nothing to restore.
         if mod is not None:
             mod.__dict__.pop("_lcm2_evicted", None)
         return
@@ -308,6 +309,17 @@ def release(name: str, publish: bool = False) -> None:
         if sys.modules.get(n) is mod:
             del sys.modules[n]
     for n, foreign in evicted.items():
+        # F-1 FLIP: never overwrite a CURRENT host-package binding with an
+        # old module object — the host may have (re)imported the name
+        # legitimately since we anchored it.
+        try:
+            cur = sys.modules.get(n)
+            if cur is not None and cur is not mod and _host_pkg_owner(n) is not None and \
+                    getattr(_host_pkg_owner(n), "submodule_search_locations", None) is not None \
+                    and _mine(cur) is False and getattr(cur, "__path__", None):
+                continue  # live host package owns the key now: leave it alone
+        except Exception:
+            pass
         sys.modules.setdefault(n, foreign)
     if mod is not None:
         mod.__dict__.pop("_lcm2_evicted", None)

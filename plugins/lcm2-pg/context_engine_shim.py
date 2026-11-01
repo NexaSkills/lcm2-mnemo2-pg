@@ -181,12 +181,14 @@ _FSTYPE = ("pgconn", "ddl", "rollup_periods", "engine", "tools", "schemas",
 def _fsib(name: str):
     """Our sibling <name>.py by FILE, in a namespaced sys.modules slot.
 
-    Idempotent. tools.py / hooks.py import pgconn etc. BARE, so after
-    registering the namespaced copies we also expose them under their
-    bare names ONLY while no foreign holder exists; a foreign holder is
-    never evicted from this path (the engine's own _sib/_own_* file
-    resolution is the primary route; this is the belt for the module-
-    namespace-import route the loader may take)."""
+    Idempotent. Under the P2FLIP rule the bare name is NEVER published
+    from here at all — a host-thread `import tools.<sub>` resolving
+    against a bare key we hold is the boot-crash class, and importlib
+    gives no frame-based way to distinguish that racer. Our modules'
+    bare sibling imports resolve through _Lcm2FileFinder while an exec
+    window is open (the shared exec-depth cell, driven by
+    _selfimport.anchor() and _engage() around OUR execs); a foreign
+    holder under a bare name is never evicted from this path."""
     full = f"lcm2_pg_fs_{name}"
     cur = sys.modules.get(full)
     if cur is not None and getattr(cur, "__file__", None):
@@ -199,7 +201,13 @@ def _fsib(name: str):
         raise ImportError(f"lcm2-pg bridge: bad spec for {path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[full] = mod
-    spec.loader.exec_module(mod)
+    _readd_finder()
+    _d = _engage()  # exec window: the module's bare siblings hit our files
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        _d()
+        _remove_finder()
     return mod
 
 

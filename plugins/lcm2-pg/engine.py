@@ -432,11 +432,20 @@ class LCM2Engine:
             _SF = _m._SibFinder
         _finder = _SF()
         _inserted = _finder not in sys.meta_path
+        try:
+            from _selfimport import _depth_cell as _dc  # shared exec cell
+        except Exception:
+            _dc = globals().get("_depth_cell") or (lambda: [0])
+        _cell = _dc()
+        _cell[0] += 1  # P2FLIP: this exec is OURS — the depth-gated
+        # finders may serve our siblings to imports from any thread inside
+        # it (and nothing here publishes a host-owned bare name).
         if _inserted:
             sys.meta_path.insert(0, _finder)
         try:
             spec.loader.exec_module(mod)
         finally:
+            _cell[0] -= 1
             if _inserted:
                 try:
                     sys.meta_path.remove(_finder)
