@@ -19,30 +19,52 @@ TREE = ast.parse(SRC)
 
 
 def _boot_lock_arg_nodes():
-    """Find the argument expression(s) passed to the pg_advisory_xact_lock
-    / pg_advisory_lock call inside pgconn.py's DDL bootstrap path."""
+    """Argument expression(s) passed to the pg_advisory_xact_lock call in
+    pgconn.py's DDL bootstrap path. The SQL is built by string
+    concatenation across execute(...) args, so scan the concatenated
+    string literals of every Call for 'advisory_xact_lock' / 'advisory_lock'
+    and take THAT call's trailing argument expressions."""
     for node in ast.walk(TREE):
-        if isinstance(node, ast.Call):
-            f = node.func
-            name = f.attr if isinstance(f, ast.Attribute) else \
-                (f.id if isinstance(f, ast.Name) else "")
-            if "advisory" in str(getattr(f, "attr", getattr(f, "id", ""))):
-                return node.args
-    raise AssertionError("no pg_advisory_*_lock call found in pgconn.py")
+        if not isinstance(node, ast.Call):
+            continue
+        # join all string-ish parts of the first arg (the SQL)
+        parts = []
+        for a in node.args[:1]:
+            for sub in ast.walk(a):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    parts.append(sub.value)
+        if not any("advisory" in p and "lock" in p.lower() for p in parts):
+            continue
+        return node.args[1:]
+    raise AssertionError("no pg_advisory_*_lock execute call found in pgconn.py")
+
+
+def _param_names_bound_to_call(tree):
+    """Map each execute(...) call node -> bound names of the enclosing
+    function/method (params + self), so we can tell what dsn-only means."""
+    out = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.posonlyargs} \
+                | {a.arg for a in fn.args.kwonlyargs}
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call):
+                    out[node] = names
+    return out
 
 
 def test_ddl_lock_first_key_is_instance_wide():
     args = _boot_lock_arg_nodes()
     assert args, "advisory lock call must pass key(s)"
-    first = ast.dump(args[0])
-    # The first key must be derived from the DSN alone — never from
-    # self.schema or an f-string mixing dsn+schema (the race that made
-    # two schemas bootstrap concurrently).
-    assert "self.dsn" in first or getattr(args[0], "attr", None) == "dsn", \
-        f"advisory-lock first key not dsn-only: {ast.unparse(args[0])}"
     src_first = ast.unparse(args[0])
-    assert "schema" not in src_first.lower(), \
-        f"schema must not feature in the instance-wide lock key: {src_first}"
+    # The lock's key expression(s) must reference the DSN and never the
+    # schema. Accept `(self.dsn,)`, `(self.dsn, ...)`, or a var bound to
+    # self.dsn — but NOT f"{self.dsn}\x1f{self.schema}" style (the race).
+    joined = " ".join(ast.unparse(a) for a in args)
+    assert "dsn" in src_first.lower(), \
+        f"advisory-lock key expression doesn't key on the dsn: {joined}"
+    assert "schema" not in joined.lower(), \
+        f"schema must not feature in the instance-wide lock key: {joined}"
 
 
 def test_concurrent_different_schema_bootstraps_no_unique_violation(dsn):
