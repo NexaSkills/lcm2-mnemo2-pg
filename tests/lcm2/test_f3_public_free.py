@@ -40,8 +40,14 @@ def test_public_has_no_relations():
 
 def test_no_probe_residue_schemas():
     import re
+    # Broadened (qa-r4 F-3 sweep class): debug sessions leave residue schemas
+    # under several naming conventions — probe_*/lcm2_probe* (probe runs),
+    # lcm2_test_* (conftest throwaway schemas that survived a crashed run),
+    # lcm2_dbg_* (ad-hoc debug-session uuid schemas, e.g. lcm2_dbg_f86854e7c9
+    # left by F1 debug). Catch all classes generically so no residue family
+    # slips past the sweep.
     bad = [s for s in _psql("select nspname from pg_namespace").splitlines()
-           if re.match(r"^(probe_.*|lcm2_probe.*|lcm2_test_.*)$", s)]
+           if re.match(r"^(probe_.*|lcm2_probe.*|lcm2_test_.*|lcm2_dbg_.*)$", s)]
     assert bad == [], f"probe residue schemas remain: {bad}"
 
 

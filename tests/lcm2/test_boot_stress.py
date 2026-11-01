@@ -7,9 +7,9 @@ was the '~1 in 24 boots: tools is not a package' race. tessa's r4 stress
 was 19/19 manual; this pins the same gate into the suite so a regression
 fails CI, not the next QA round.
 
-Serial by design: the r3 race was concurrency in the *imports* (both plugin
-loaders racing inside one boot), not load on the box, and tessa's own r4
-gate (G1a) was sequential too. Marked slow (N x ~18s boot wall);
+Boots run in parallel (thread pool, LCM2_BOOT_PAR workers) — the r3 race
+is an in-process import race, not load-dependent, so concurrency only buys
+wall time. Box has 4 cores; 3 boots ~= 25s wall. Marked slow (N x ~18s boot wall);
 LCM2_BOOT_N overrides the count, LCM2_SKIP_BOOT_STRESS=1 skips (e.g. CI
 without the profile).
 """
@@ -17,12 +17,14 @@ import os
 import pathlib
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PROFILE = os.environ.get("LCM2_BOOT_PROFILE", "lcm2agent")
 N = int(os.environ.get("LCM2_BOOT_N", "6"))
+PAR = int(os.environ.get("LCM2_BOOT_PAR", "3"))
 BOOT_TIMEOUT = 180
 
 # crash fingerprints of the closed race (import poisoning), NOT the
@@ -44,26 +46,31 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_boot_stress_no_crashes():
-    hermes = shutil.which("hermes")
-    assert hermes  # skipif guarantees it; narrows the type for the run below
-    crashes = []
-    for i in range(N):
-        # no --resume: every boot starts a fresh session id (host default),
-        # so no state carries between boots
-        try:
-            r = subprocess.run(
-                [hermes, "-p", PROFILE, "chat", "-q", "Reply PONG"],
-                capture_output=True, text=True, timeout=BOOT_TIMEOUT,
-                cwd=str(REPO),
-            )
-        except subprocess.TimeoutExpired:
-            crashes.append(f"boot {i}: TIMEOUT after {BOOT_TIMEOUT}s")
-            continue
-        err = r.stderr or ""
-        hits = [p for p in CRASH_PATTERNS if p in err]
-        if r.returncode != 0 or hits:
-            crashes.append(
-                f"boot {i}: rc={r.returncode} patterns={hits} "
+def _boot(i):
+    # plain `chat -q`: each boot mints a fresh session id (no --resume),
+    # so no session state carries between boots
+    try:
+        r = subprocess.run(
+            [_which_hermes(), "-p", PROFILE, "chat", "-q", "Reply PONG"],
+            capture_output=True, text=True, timeout=BOOT_TIMEOUT,
+            cwd=str(REPO),
+        )
+    except subprocess.TimeoutExpired:
+        return f"boot {i}: TIMEOUT after {BOOT_TIMEOUT}s"
+    err = r.stderr or ""
+    hits = [p for p in CRASH_PATTERNS if p in err]
+    if r.returncode != 0 or hits:
+        return (f"boot {i}: rc={r.returncode} patterns={hits} "
                 f"stderr_tail={err[-500:]!r}")
+    return None
+
+
+def _which_hermes():
+    return shutil.which("hermes")
+
+
+def test_boot_stress_no_crashes():
+    assert _which_hermes()  # skipif guarantees it; narrows the type
+    with ThreadPoolExecutor(max_workers=PAR) as ex:
+        crashes = [c for c in ex.map(_boot, range(N)) if c]
     assert not crashes, "boot stress crashed:\n" + "\n".join(crashes)
