@@ -30,6 +30,27 @@ def _setup():
                 "CREATE TABLE IF NOT EXISTS conc_probe("
                 "tag text, worker int, seq int, payload text, "
                 "primary key(tag, worker, seq))")
+    # unqualified DDL follows search_path (schema, public): if public
+    # already holds a conc_probe (e.g. created while public was the only
+    # path entry), the CREATE above resolves there and workers would
+    # silently write to the wrong table. Same DDL, schema-qualified into
+    # each agent schema — idempotent, never touches public.
+    for s in SCHEMAS:
+        with pgconn.connect(DSN, "public", ddl=True) as cx:
+            cx.execute(
+                f'CREATE TABLE IF NOT EXISTS "{s}".conc_probe('
+                "tag text, worker int, seq int, payload text, "
+                "primary key(tag, worker, seq))")
+    # fail loudly rather than silently mixing rows across schemas
+    with pgconn.connect(DSN, "public") as cx:
+        stray = cx.query_scalar(
+            "select count(*) from pg_class c "
+            "join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = 'public' and c.relname = 'conc_probe'")
+        assert stray == 0, ("public.conc_probe exists: unqualified DDL in "
+                            "this DB resolves to public (search_path "
+                            "'schema, public' shadowing) — drop it, it "
+                            "silently steals agent-schema writes")
 
 
 def _worker(args):
