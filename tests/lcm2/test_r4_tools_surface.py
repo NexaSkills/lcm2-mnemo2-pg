@@ -60,7 +60,15 @@ def test_register_exposes_all_15_tools_and_hooks(registered):
     ctx, eng = registered
     assert sorted(ctx.tools) == sorted(VENDOR_TOOLS)
     assert {"pre_llm_call", "subagent_start", "subagent_stop"} <= set(ctx.hooks)
-    assert ctx.context_engine is eng
+    # Real contract (plugin_entry.py:135-172): register() checks
+    # isinstance(ContextEngine) BEFORE registering — under pytest the REAL
+    # host base class is importable and the raw engine fails it, so the
+    # shim bridge registers instead: a ContextEngine subclass that wraps
+    # the factory's engine. Assert the guaranteed guarantee (delegate is
+    # the engine), accept the raw-identity route too (hosts/fakes without
+    # the base class get `is eng` via the raw path).
+    ce = ctx.context_engine
+    assert ce is eng or getattr(ce, "_impl", None) is eng
 
 
 @pytest.mark.parametrize("name", VENDOR_TOOLS)

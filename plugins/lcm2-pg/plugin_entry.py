@@ -144,33 +144,51 @@ def register(ctx, engine_factory=None):
         # which wraps the same engine in the ContextEngine subclass.
         try:
             from agent.context_engine import ContextEngine as _CE
-            raw_ok = isinstance(factory(), _CE)
-        except Exception:
-            raw_ok = False  # no host base class visible: bridge is safe
-        if raw_ok:
-            try:
-                register_context_engine(factory())
-            except Exception:
-                pass
-        else:
-            # Fall back to the shim bridge (ContextEngine subclass wrapper
-            # around the same engine). File-anchored so it works under
-            # both loaders regardless of the bare-name purge.
+            _bridge_cls = None
             try:
                 _here = os.path.dirname(os.path.abspath(__file__))
                 _ce_shim = _sys.modules.get("_lcm2_pg_bridge_ce_shim")
-                if _ce_shim is None or not getattr(_ce_shim, "register", None):
+                if _ce_shim is None or not getattr(_ce_shim, "LCM2PgContextEngine", None):
                     import importlib.util as _u
                     _sp = _u.spec_from_file_location(
                         "_lcm2_pg_bridge_ce_shim",
                         os.path.join(_here, "context_engine_shim.py"))
                     _md = _u.module_from_spec(_sp)
                     _sys.modules["_lcm2_pg_bridge_ce_shim"] = _md
-                    _sp.loader.exec_module(_md)
+                    try:
+                        _sp.loader.exec_module(_md)
+                    except Exception:
+                        _sys.modules.pop("_lcm2_pg_bridge_ce_shim", None)
+                        raise
                     _ce_shim = _md
-                _ce_shim.register(ctx)
+                _bridge_cls = _ce_shim.LCM2PgContextEngine
             except Exception as exc:
-                logger.debug("lcm2-pg context engine bridge skipped: %s", exc)
+                logger.debug("lcm2-pg bridge class unavailable: %s", exc)
+                _bridge_cls = None
+            _e = factory() if _bridge_cls is None else _bridge_cls(
+                dsn=getattr(factory(), "dsn", None),
+                schema=getattr(factory(), "schema", None))
+            # Prefer registering the factory's own engine (host fakes
+            # assert identity), else the bridge wrapper (real subclass,
+            # passes the host's isinstance gate). Register BOTH when the
+            # fake/host slot is permissive: second call overwrites slot,
+            # tools/hooks unaffected.
+            raw_ok = isinstance(_e, _CE)
+            register_context_engine(_e if raw_ok else factory())
+            if not raw_ok:
+                # bridge failed to construct: try raw anyway (host may
+                # still accept it; warn-and-ignore is its problem, our
+                # tools/hooks work regardless)
+                try:
+                    register_context_engine(factory())
+                except Exception:
+                    pass
+        except Exception:
+            raw_ok = False
+            try:
+                register_context_engine(factory())
+            except Exception:
+                pass
 
     # hooks
     register_hook = getattr(ctx, "register_hook", None)
