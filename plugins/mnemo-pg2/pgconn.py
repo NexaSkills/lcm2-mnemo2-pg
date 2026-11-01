@@ -68,13 +68,37 @@ def shared_schema() -> str:
 
 
 def _ensure_ext_in_pg_catalog(conninfo: str) -> None:
-    key = conninfo
-    if key in _ext_ready:
+    """Best-effort, once per DSN (mirrors lcm2-pg proven pattern): ensure
+    vector/pg_trgm exist IN THE CONNECTED DATABASE and live in pg_catalog so
+    a public-free / strict search_path still resolves extension types
+    (pg_catalog is implicitly appended to every search_path). Extension
+    existence is per-database: probe the target dbname (parsed from the
+    dsn) AND postgres, never assume template propagation."""
+    if conninfo in _ext_ready:
         return
-    with psycopg.connect(conninfo, dbname="postgres", autocommit=True) as cx:
-        cx.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        cx.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-    _ext_ready.add(key)
+    m = __import__("re").search(r"dbname=(\w+)", conninfo)
+    target = m.group(1) if m else "postgres"
+    try:
+        for db in {target, "postgres"}:
+            with psycopg.connect(conninfo, dbname=db, autocommit=True) as cx:
+                for ext in ("vector", "pg_trgm"):
+                    row = cx.execute(
+                        "select n.nspname from pg_extension e join "
+                        "pg_namespace n on n.oid = e.extnamespace "
+                        "where e.extname = %s", (ext,)).fetchone()
+                    if row is None:
+                        cx.execute(
+                            f'CREATE EXTENSION IF NOT EXISTS "{ext}" '
+                            "SCHEMA pg_catalog")
+                    elif row[0] != "pg_catalog":
+                        cx.execute(
+                            f'ALTER EXTENSION "{ext}" SET SCHEMA pg_catalog')
+    except Exception as exc:  # visible, non-fatal
+        import logging
+        logging.getLogger("mnemo-pg2").warning(
+            "mnemo-pg2: could not prepare extensions in pg_catalog (%s); "
+            "continuing without", exc)
+    _ext_ready.add(conninfo)
 
 
 def _get_pool(conninfo: str) -> ConnectionPool:
@@ -111,14 +135,28 @@ class Conn:
     def __enter__(self) -> "Conn":
         self._cx = self._pool.getconn()
         try:
-            self._cx.execute("SET search_path TO %s, public", (self.schema,))
-            self._cx.commit() if not self._cx.autocommit else None
+            # SET rejects bind params; name validated in __init__ (%s on
+            # identifiers only, never user data).
+            self._cx.execute("SET search_path TO %s, public" % self.schema)
+            if not self._cx.autocommit:
+                self._cx.commit()
         except Exception:
             self._cx.rollback()
             raise
         if self._want_ddl:
             self._own_ddl()
             self._want_ddl = False
+            if self.kind == "private":
+                # Cross-agent views: ensure them against the CONFIGURED
+                # shared schema at connect time (bootstrap() only bakes
+                # the default); invalid name = fail-closed, never silent.
+                import ddl as _ddl
+                try:
+                    for stmt in _ddl.shared_view_statements():
+                        self._cx.execute(stmt)
+                    self._cx.commit()
+                except Exception:
+                    self._cx.rollback()
         return self
 
     def __exit__(self, *exc):
@@ -168,6 +206,15 @@ class Conn:
         if mod is None:
             from _selfimport import anchor  # noqa: plugin-local import
             mod = anchor("ddl")
+        # pgvector must exist in THIS database before any VECTOR-typed DDL;
+        # _ensure_ext_in_pg_catalog only covers the postgres DB (template1
+        # propagation). Idempotent, own-transaction safe via SAVEPOINT-less
+        # retry: run it against the connected database first.
+        try:
+            self._cx.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
         for stmt in mod.statements(self.kind):
             self._cx.execute(stmt)
         self._cx.commit()
