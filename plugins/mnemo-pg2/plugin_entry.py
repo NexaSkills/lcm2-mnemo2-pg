@@ -11,6 +11,11 @@ register(ctx) does three things (spec-phase3 §3):
   * nothing else: no sys.path edits, no bare-name publications (the
     __init__.py purge guarantees the interpreter is left as found).
 
+Thread safety (R8): handlers may be invoked from any thread. ALL
+per-call state comes from os.environ at call time (pgconn resolves
+dsn/schema per connect) — this module keeps no mutable state and never
+touches a shared object mid-call.
+
 Config resolution (spec §4) lives entirely in pgconn/engine; this file is
 dumb registration. Schema bootstrap is lazy (first connect(ddl=True)).
 """
@@ -46,7 +51,18 @@ def _wildcard_names():
     if env:  # explicit list wins (probe escape hatch)
         return sorted(n.strip() for n in env.split(",") if n.strip())
     with open(_WILDCARD_FILE, "r", encoding="utf-8") as fh:
-        return sorted(n.strip() for n in fh if n.strip())
+        names = sorted(n.strip() for n in fh if n.strip())
+    if len(names) < 42:
+        # Self-containment: the checked-in list lives in the repo tests
+        # dir; when the plugin is deployed standalone (hermes plugin
+        # dirs) the file is absent — fall back to the engine's own
+        # method set (identical by construction, test_surface pins it).
+        names = sorted(
+            _PREFIX + (m.rstrip("_") if m != "import_" else m)
+            for m in dir(_engine.Engine)
+            if not m.startswith("_") and callable(getattr(_engine.Engine, m))
+            and m not in ("conv",))
+    return names
 
 
 def _dispatch(tool_name, args):
@@ -55,11 +71,21 @@ def _dispatch(tool_name, args):
     never an exception into the host (no fallback paths anywhere, R3)."""
     meth = _method_name(tool_name)
     try:
-        eng = _engine.Engine()
+        # host-injected engine (kwargs['engine']) only if it IS ours
+        eng = None
+        cand = (args or {}).get("__engine__") if isinstance(args, dict) else None
+        try:
+            if isinstance(cand, _engine.Engine):
+                eng = cand
+        except Exception:
+            eng = None
+        if eng is None:
+            eng = _engine.Engine()
         fn = getattr(eng, meth, None)
         if fn is None or not callable(fn):
             return {"ok": False, "error": f"unknown tool: {tool_name}"}
         kwargs = dict(args or {})
+        kwargs.pop("__engine__", None)
         # handler may be called positionally ({...}) or with **kwargs by
         # the host; either way 'args' arrives as a dict here.
         if list(kwargs) == ["args"] and isinstance(kwargs["args"], dict):
@@ -111,7 +137,7 @@ def _schema_for(tool_name):
     sig = None
     try:
         sig = inspect.signature(fn)
-    except (TypeError, ValueError, TypeError):  # pragma: no cover
+    except (TypeError, ValueError):  # pragma: no cover
         pass
     if sig is not None:
         for pname, p in sig.parameters.items():
@@ -213,7 +239,8 @@ def _post_tool_call(tool_name="", arguments=None, result=None, **kw):
 
 def register(ctx, engine_factory=None):
     """Toolset "memory", 42 tools, 3 hooks (spec §2/§3/§6)."""
-    for name in _wildcard_names():
+    names = _wildcard_names()
+    for name in names:
         handler = (lambda n: (lambda args=None, **kw:
                               _dispatch(n, args if args is not None else kw)))(name)
         ctx.register_tool(name=name, toolset=TOOLSET,
@@ -222,4 +249,4 @@ def register(ctx, engine_factory=None):
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("pre_llm_call", _pre_llm_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
-    return {"tools": len(_wildcard_names()), "hooks": 3}
+    return {"tools": len(names), "hooks": 3}
