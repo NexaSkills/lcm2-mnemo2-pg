@@ -10,11 +10,14 @@
 # Usage: onboard_profile.sh <agent> [--dry-run]
 set -euo pipefail
 
-AGENT=${1:?usage: onboard_profile.sh <agent> [--dry-run]}
-DRY=${2:-}
+ARG1=${1:?usage: onboard_profile.sh <agent> [--dry-run]}
+if [ "$ARG1" = "--dry-run" ]; then AGENT=; DRY=--dry-run; else AGENT=$ARG1; DRY=${2:-}; fi
 REPO=${REPO:-$(cd "$(dirname "$0")/.." && pwd)}
-HERMES_HOME=${HERMES_HOME:-$HOME/.hermes}
-PENV=$HERMES_HOME/profiles/$AGENT/.env
+# Real hermes home. HERMES_HOME is profile-scoped in agent shells (points at
+# ~/.hermes/profiles/<current>), so it cannot be trusted here; HERMES_REAL_HOME
+# (when set) is the true base. Override HERMES_BASE for cron/off-shell use.
+HERMES_BASE=${HERMES_BASE:-${HERMES_REAL_HOME:-$HOME}/.hermes}
+PENV=$HERMES_BASE/profiles/$AGENT/.env
 BASE=${BASE:-$HOME/lcm2-mnemo2-pg/pg}
 PORT=${PORT:-54331}
 ROLE=${ROLE:-mnemo201}
@@ -22,13 +25,22 @@ ROLE=${ROLE:-mnemo201}
 run() { if [ "$DRY" = "--dry-run" ]; then echo "DRY: $*"; else "$@"; fi; }
 
 echo "== 1. profile =="
-if [ ! -f "$HERMES_HOME/profiles/$AGENT/config.yaml" ]; then
-  # dir may exist as a stub without config.yaml; hermes refuses create then
-  if [ -d "$HERMES_HOME/profiles/$AGENT" ]; then
-    echo "NOTE: $AGENT dir exists without config.yaml; hermes treats it as existing"
+if [ -z "$AGENT" ]; then
+  echo "dry-run only: existing profiles on disk:"
+  ls -d "$HERMES_BASE"/profiles/*/ 2>/dev/null | sed 's|.*/profiles/||; s|/$||' | grep -vE '^\.' || true
+  echo "DRY done"; exit 0
+fi
+if [ ! -f "$HERMES_BASE/profiles/$AGENT/config.yaml" ]; then
+  # A bare profiles/<agent>/ dir (no config.yaml) does NOT count as a profile:
+  # `hermes -p <agent> ...` lazily generates config.yaml from defaults. Create
+  # properly when absent; hermes refuses create if it considers the name taken,
+  # which is fine because the materialise-by-default path below produces the
+  # same blank profile.
+  if ! hermes profile create "$AGENT" --description "$AGENT (lcm2-mnemo2-redesign test agent)" --no-alias 2>/dev/null; then
+    echo "NOTE: hermes says profile exists (or dir stub); materialising config via CLI"
+    hermes -p "$AGENT" config get context.engine >/dev/null 2>&1 || true
   fi
-  run hermes profile create "$AGENT" --description "$AGENT (lcm2-mnemo2-redesign test agent)" --no-alias || true
-  [ -f "$HERMES_HOME/profiles/$AGENT/config.yaml" ] || { echo "FATAL: no config.yaml for $AGENT after create" >&2; exit 1; }
+  [ -f "$HERMES_BASE/profiles/$AGENT/config.yaml" ] || { echo "FATAL: no config.yaml for $AGENT after create" >&2; exit 1; }
 fi
 [ -n "$DRY" ] && { echo "DRY done"; exit 0; }
 
@@ -66,7 +78,7 @@ run hermes -p "$AGENT" config set delegation.max_concurrent_children 1
 run hermes -p "$AGENT" config set delegation.max_spawn_depth 1
 
 echo "== 5. plugin symlinks (single source in this repo) =="
-for d in "$HERMES_HOME/plugins" "$HERMES_HOME/profiles/$AGENT/plugins"; do
+for d in "$HERMES_BASE/plugins" "$HERMES_BASE/profiles/$AGENT/plugins"; do
   mkdir -p "$d"
   run ln -sfn "$REPO/plugins/lcm2-pg"   "$d/lcm2-pg"
   run ln -sfn "$REPO/plugins/mnemo-pg2" "$d/mnemo-pg2"

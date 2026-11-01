@@ -66,3 +66,16 @@ Phase 1 ships inert skeletons (discovery-valid `plugin.yaml`, no tools/hooks).
 - N2: "executed form" wording for PRAGMA foreign_key_check (tests-only hits).
 - N3/N4: scope-label footnote — "source-only" counts use strict `-v '/tests/'`;
   substring exclusion shifts sqlite_vec src count 44→43 (cosmetic only).
+
+## Resume turn (2026-11-01, QA PARTIAL fixes + instance consolidation)
+
+- Instance binary consolidation: the systemd unit was found running the distro
+  build (`/usr/bin/postgres`) against a distro-initdb'd data dir. setup_instance.sh
+  now rewrites AND restarts the unit whenever its ExecStart drifts from $PGBIN,
+  and verifies `/proc/<postmaster>/exe == $PGBIN/postgres` before proceeding.
+  Old data dir preserved as pg/data.broken-system-pg (audit only).
+- QA F1: onboard_profile.sh plugin-enable/verify polish committed (was disk-only).
+- QA fix 2: `onboard_profile.sh --dry-run` (no agent) lists profiles and exits 0;
+  agent-arg dry-run unchanged.
+- Env fix: script uses HERMES_BASE (from HERMES_REAL_HOME/$HOME), never the
+  profile-scoped HERMES_HOME env var an agent shell exports.
