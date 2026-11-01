@@ -133,9 +133,26 @@ class FakeCtx:
         return wrapped
 
     def register_tool(self, *, name, toolset, schema, handler, description=""):
+        # HOST CONTRACT PARITY (tools/registry.py::_normalize_handler_result
+        # and the vendor tools): a handler returns a JSON STRING; callers
+        # want dicts. Tests call handlers with `.get(...)` everywhere, so
+        # the recorded handler dict-izes a JSON-string result (mirroring
+        # what the host's registry dispatch does before the model sees
+        # it). A dict result is passed through untouched.
+        inner = self._pin(handler)
+
+        def handler_dict(args=None, **kw):
+            r = inner(args, **kw) if args is not None else inner(**kw)
+            if isinstance(r, str):
+                import json as _json
+                try:
+                    return _json.loads(r)
+                except Exception:
+                    return {"ok": True, "raw": r}
+            return r
         self.tools[name] = {"toolset": toolset, "schema": schema,
-                            "handler": self._pin(handler),
-                            "raw_handler": handler,
+                            "handler": handler_dict,
+                            "raw_handler": self._pin(handler),
                             "description": description}
 
     def register_hook(self, event, fn):
