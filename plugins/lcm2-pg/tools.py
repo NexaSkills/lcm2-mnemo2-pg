@@ -39,8 +39,8 @@ def _out(doc: dict, tool: str, **extra) -> str:
 def _eng(args, kwargs):
     e = kwargs.get("engine") or args.get("_engine")
     if e is None:
-        import engine
-        e = engine.LCM2Engine()
+        from _selfimport import anchor
+        e = anchor("engine").LCM2Engine()
     return e
 
 

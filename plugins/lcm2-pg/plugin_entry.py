@@ -17,14 +17,15 @@ __version__ = "0.2.0"
 
 
 def _engine_factory_from_env():
-    import engine
-    return engine.LCM2Engine()
+    from _selfimport import anchor
+    return anchor("engine").LCM2Engine()
 
 
 def register(ctx, engine_factory=None):
     """Plugin entry: context engine + 15 tools + hooks + /lcm command."""
-    import tools as T
-    import hooks
+    from _selfimport import anchor
+    T = anchor("tools")
+    hooks = anchor("hooks")
 
     factory = engine_factory or _engine_factory_from_env
     _engine_holder = {}
@@ -40,7 +41,7 @@ def register(ctx, engine_factory=None):
     # them in CLI/TUI sessions (F1).
     register_tool = getattr(ctx, "register_tool", None)
     if callable(register_tool):
-        import schemas as S
+        S = anchor("schemas")  # file-anchored, never the host's bare name
         for name in sorted(S.TOOLS):
             fn = getattr(T, name, None)
             if not callable(fn):
@@ -68,11 +69,19 @@ def register(ctx, engine_factory=None):
     # stricter or absent, the call is harmless (warn-and-ignore / accepted).
     register_context_engine = getattr(ctx, "register_context_engine", None)
     if callable(register_context_engine):
+        # Try the raw duck-typed engine FIRST: test/host fakes that record
+        # it (ctx.context_engine) or accept anything get the real engine —
+        # no hidden wrapper. A strict isinstance gate (stock host) rejects it
+        # with TypeError; only THEN fall back to the shim bridge, which
+        # registers the same engine wrapped in the ContextEngine subclass.
         try:
-            from context_engine_shim import register as _bridge_register
-            _bridge_register(ctx)
-        except Exception as exc:
-            logger.debug("lcm2-pg context engine bridge skipped: %s", exc)
+            register_context_engine(factory())
+        except Exception:
+            try:
+                from context_engine_shim import register as _bridge_register
+                _bridge_register(ctx)
+            except Exception as exc:
+                logger.debug("lcm2-pg context engine bridge skipped: %s", exc)
 
     # hooks
     register_hook = getattr(ctx, "register_hook", None)
@@ -90,7 +99,7 @@ def register(ctx, engine_factory=None):
     register_command = getattr(ctx, "register_command", None)
     if callable(register_command) and os.environ.get(
             "LCM_ENABLE_SLASH_COMMAND", "1") != "0":
-        import command
+        command = anchor("command")
         try:
             from hermes_cli.commands import resolve_command
             taken = resolve_command("lcm") is not None
@@ -112,6 +121,19 @@ def register(ctx, engine_factory=None):
         except Exception:
             pass
 
+    # Leave the interpreter AS WE FOUND IT: our modules stay reachable via
+    # direct references (module globals and handler closures — all our
+    # cross-imports are file-anchored), the bare names go back to exactly
+    # what they were before register() ran. Publishing our modules under
+    # host bare names is NOT safe: model_tools re-imports `tools` at
+    # dispatch time and the host re-imports `engine.*` submodules — a file
+    # module under either name breaks those imports for the whole session.
+    try:
+        from _selfimport import release_all
+        release_all()
+    except Exception:
+        pass
+
 
 def _wrap(fn, get_engine):
     def handler(args, **kwargs):
@@ -126,8 +148,8 @@ def _wrap(fn, get_engine):
         # derive from HERMES_HOME), identical results.
         eng = kwargs.get("engine")
         try:
-            import engine as _E
-            ours = isinstance(eng, _E.LCM2Engine)
+            from _selfimport import anchor as _a
+            ours = isinstance(eng, _a("engine").LCM2Engine)
         except Exception:
             ours = False
         if not ours:

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 
-import tools as T
+from _selfimport import anchor as _anchor  # file-anchored: never the host's
+T = _anchor("tools")                    # `tools` package if one pre-binds it
 
 
 def handle(raw: str, engine) -> str:

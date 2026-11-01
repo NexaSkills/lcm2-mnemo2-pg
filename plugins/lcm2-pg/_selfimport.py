@@ -23,6 +23,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PKG = (__package__ or "").split(".")[0]
+_ANCHORED: set = set()  # names ever anchor()'d in this interpreter
 
 
 def _mine(mod) -> bool:
@@ -67,6 +68,7 @@ def anchor(name: str, filename: str | None = None):
     # publish under the bare + package names (evicting foreign holders;
     # they are restored by release() when the importing frame exits)
     names = [name] + ([f"{_PKG}.{name}"] if _PKG else [])
+    _ANCHORED.add(name)
     evicted = {}
     for n in names:
         cur = sys.modules.get(n)
@@ -78,12 +80,25 @@ def anchor(name: str, filename: str | None = None):
     return mod
 
 
-def release(name: str) -> None:
+def release(name: str, publish: bool = False) -> None:
     """Undo anchor()'s publication for `name`: drop our registrations and
     restore whatever foreign module was evicted (host code keeps its
-    module objects either way)."""
+    module objects either way).
+
+    publish=True is the at-exit variant: the bare name still resolves to
+    OUR module (a plain import inside our module bodies stays correct)
+    and no foreign module is force-restored; the eviction bookkeeping is
+    just cleared. Without it the host's evicted bindings come back.
+    """
     mod = sys.modules.get(name)
+    if mod is None or not _mine(mod):
+        mod = sys.modules.get(f"_lcm2_impl_{name}")
     evicted = getattr(mod, "_lcm2_evicted", {}) if mod else {}
+    if publish:
+        # Keep our bare registrations in place; nothing to restore.
+        if mod is not None:
+            mod.__dict__.pop("_lcm2_evicted", None)
+        return
     for n in [name] + ([f"{_PKG}.{name}"] if _PKG else []):
         if sys.modules.get(n) is mod:
             del sys.modules[n]

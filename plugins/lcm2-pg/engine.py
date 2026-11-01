@@ -399,7 +399,23 @@ class LCM2Engine:
             "lcm2_pg_plugin_tools", path)
         mod = importlib.util.module_from_spec(spec)
         sys.modules["lcm2_pg_plugin_tools"] = mod
-        spec.loader.exec_module(mod)
+        # tools.py bare-imports our siblings (pgconn, engine, ...); the
+        # context-engine capture loader may not have our dir on sys.path,
+        # so prepend it for the exec ONLY (restore in finally). If a
+        # sibling bare name already resolves to OUR file (shim anchors
+        # them), the import hits sys.modules first and sys.path is inert.
+        sp = str(path.parent)
+        had = sp in sys.path
+        if not had:
+            sys.path.insert(0, sp)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            if not had:
+                try:
+                    sys.path.remove(sp)
+                except ValueError:
+                    pass
         LCM2Engine._tools_mod = mod
         return mod
 

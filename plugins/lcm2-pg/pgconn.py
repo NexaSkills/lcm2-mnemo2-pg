@@ -125,16 +125,28 @@ class Conn:
         # pg_catalog implicit search_path entry keeps extension types
         # (vector, now(), gen_random_uuid) resolvable, so strictness costs
         # nothing.
+        # DELIBERATE: ddl=True (bootstrap) connects under schema `public`
+        # (bootstrap DDL is unqualified — it must land in the session
+        # schema; see test_r4_no_sqlite). If public still holds relations
+        # at that moment, bootstrap would silently build the whole 37-table
+        # store THERE (the F3 public-residue regeneration loop). Fail closed
+        # instead: public must be empty (scripts/sweep_public_residue.py);
+        # extensions resolve via pg_catalog (_ensure_ext_in_pg_catalog).
+        if self._ddl and self._schema == "public" and self._public_busy():
+            raise RuntimeError(
+                "lcm2-pg: refusing ddl bootstrap while schema public holds "
+                "relations (unqualified CREATE TABLE IF NOT EXISTS would "
+                "land there). Run scripts/sweep_public_residue.py.")
         self._conn.execute(
             "select set_config('search_path', %s, false)", (self._schema,))
-        # Extensions (vector, pg_trgm) live in public: pg_catalog's implicit
-        # search_path entry cannot see them, so make operator/class refs
-        # (e.g. `<=> vector_ops`) resolvable for this session explicitly.
-        # Our own schema stays FIRST, so public can never shadow a name.
-        self._conn.execute(
-            "select set_config('search_path', "
-            "current_setting('search_path') || ', public', false)")
         return self
+
+    def _public_busy(self) -> bool:
+        return bool(self._conn.execute(
+            "select exists(select 1 from pg_class c "
+            "join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = 'public' "
+            "and c.relkind in ('r','p','m','v','f'))").fetchone()[0])
 
     def _evict_pool(self) -> None:
         """Close+drop THIS Conn's pool (used when checkout never succeeded)."""

@@ -124,3 +124,22 @@ class LCM2PgContextEngine(ContextEngine):
 def register(ctx):
     """Category-capture entry (context engine slot): the bridge engine."""
     ctx.register_context_engine(LCM2PgContextEngine())
+
+
+# The context-engine capture loader instantiates the engine class it finds
+# in the module namespace WITHOUT calling register() (plugin_loader.
+# instance_from_module's subclass scan, or the isolation host's class
+# capture). That left tools dispatching through a never-anchored namespace
+# ("No module named 'pgconn'"). Anchor our sibling bare names at class-
+# creation time too — anchor() restores any foreign holder it evicts when
+# its importing frame exits, and the engine methods resolve siblings via
+# _sib/_own_* file paths regardless, so this only closes the gap for
+# later bare imports inside our modules.
+try:
+    from _selfimport import anchor as _anchor
+    _anchor("pgconn")
+    _anchor("engine")
+    _anchor("tools")
+    _anchor("schemas")
+except Exception:  # pragma: no cover — package layout problem: stay inert
+    pass
