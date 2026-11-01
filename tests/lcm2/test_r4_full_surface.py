@@ -279,5 +279,9 @@ def test_slash_command_subcommands(registered, seeded):
 def test_bundled_skill_registered_and_present(registered):
     ctx, _ = registered
     assert ctx.skill == "lcm2-pg"
-    p = pathlib.Path(inspect.getfile(sys.modules["plugin_entry"])).parent
+    # F1: register() purges every key its exec created (bare 'plugin_entry'
+    # included) — locate the file via the engine module that stays alive in
+    # the fixture instead of a sys.modules lookup that would KeyError now.
+    import engine as _E
+    p = pathlib.Path(inspect.getfile(_E)).parent
     assert (p / "skills" / "lcm2-pg" / "SKILL.md").is_file()
