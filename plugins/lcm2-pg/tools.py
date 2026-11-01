@@ -20,11 +20,17 @@ except Exception:              # every later import in the process
     _pgconn_bare = True
 
 def _pg():
-    """pgconn module, resolved lazily if the exec-time anchor failed."""
+    """pgconn module, resolved lazily if the exec-time anchor failed.
+    Late (host-origin) calls go via OUR package __init__ (F-2: the F1
+    purge deletes the bare '_selfimport' key the direct import needs)."""
     global pgconn, _pgconn_bare
     if _pgconn_bare:
         try:
-            from _selfimport import anchor
+            try:
+                from _selfimport import anchor
+            except Exception:
+                import __init__ as _pkg  # only ever OUR package __init__
+                anchor = _pkg._anchor
             pgconn = anchor("pgconn")
             _pgconn_bare = False
         except Exception:
