@@ -19,11 +19,23 @@ try:  # file-anchored: never bind a host-root package that owns the bare name
 except ImportError:  # pragma: no cover - _HERE is always on sys.path via __init__
     _anchor = None
 
+
+def _late(name):
+    """Sibling module for LATE (post-register, host-origin) calls. The F1
+    purge deletes the bare '_selfimport' key, so fall back to OUR package
+    __init__'s resolver (package-qualified; F-2 fix route b)."""
+    try:
+        from _selfimport import anchor
+        return anchor(name)
+    except Exception:
+        import __init__ as _pkg  # only ever OUR package __init__
+        return _pkg._sibling(name)
+
+
 def _sib(name):
     if _anchor is not None:
         return _anchor(name)
-    import importlib
-    return importlib.import_module(name)
+    return _late(name)
 
 import pgconn  # noqa: E402  (resolved last-resort; engine funcs use _sib at call time)
 
@@ -277,12 +289,10 @@ class LCM2Engine:
     # the tool surface lives in tools.py; thin delegates here so tests and
     # register() hit the same callables:
     def tools_lcm_grep(self, args):
-        from _selfimport import anchor
-        return anchor("tools").lcm_grep(args, engine=self)
+        return _late("tools").lcm_grep(args, engine=self)
 
     def tools_lcm_expand(self, args):
-        from _selfimport import anchor
-        return anchor("tools").lcm_expand(args, engine=self)
+        return _late("tools").lcm_expand(args, engine=self)
 
     # -- host ContextEngine protocol (duck-typed; no host imports, R3) --
     # Bare attributes the host's compression paths read via getattr() on

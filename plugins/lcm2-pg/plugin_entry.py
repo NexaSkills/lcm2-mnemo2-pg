@@ -17,7 +17,11 @@ __version__ = "0.2.0"
 
 
 def _engine_factory_from_env():
-    from _selfimport import anchor
+    try:  # F-2: late (host-origin) call — the F1 purge deletes the bare
+        from _selfimport import anchor
+    except Exception:      # '_selfimport' key; OUR package __init__
+        import __init__ as _pkg  # resolves anchor() package-qualified
+        anchor = _pkg._anchor
     return anchor("engine").LCM2Engine()
 
 
