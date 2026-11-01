@@ -125,6 +125,7 @@ class Engine:
         age_hours_col = (
             "EXTRACT(EPOCH FROM (%s::timestamptz - w.created_at)) / 3600.0")
         temporal_expr = f"POWER(0.5, GREATEST({age_hours_col}, 0) / {hl})"
+        temporal_expr_p = temporal_expr.replace("w.created_at", "p.created_at")
         exp_filter = (" AND (valid_until IS NULL OR valid_until >= "
                       "%s::timestamptz::date)") if not include_expired else ""
         now_param = now.isoformat()
@@ -154,11 +155,11 @@ class Engine:
                    'episodic' AS scope, p.session_id, 'episodic' AS source,
                    coalesce(1 - (e.embedding <=> %s::vector), 0) AS vec_sim,
                    coalesce(ts_rank_cd(p.search, plainto_tsquery('english', %s)), 0) AS fts,
-                   {temporal_expr} AS temporal,
+                   {temporal_expr_p} AS temporal,
                    (%s::real * coalesce(1 - (e.embedding <=> %s::vector), 0)
                     + %s::real * ln(1 + coalesce(ts_rank_cd(p.search, plainto_tsquery('english', %s)), 0))
                     + %s::real * p.importance
-                    + %s::real * {temporal_expr}) AS score
+                    + %s::real * {temporal_expr_p}) AS score
             FROM episodic_memory p
             LEFT JOIN memory_embeddings e ON e.memory_id = p.id AND e.kind = 'episodic'
             WHERE (p.search @@ plainto_tsquery('english', %s)
@@ -168,7 +169,7 @@ class Engine:
         results: list[dict] = []
         tiers = []
         with self._cx(bank) as cx:
-            params = [qvec_str, query, query]
+            params = [qvec_str, query, now_param]
             if exp_filter:
                 params.append(now_param)
             params += [query, vw, fw, iw, temporal_weight, limit]
@@ -180,8 +181,8 @@ class Engine:
             if len(results) < limit:
                 erows = cx.query_dicts(
                     sql_episodic,
-                    (qvec_str, query, vw, qvec_str, fw, query, iw,
-                     temporal_weight, query, limit))
+                    (qvec_str, query, now_param, vw, qvec_str, fw, query, iw,
+                     temporal_weight, now_param, query, limit))
                 tiers.append(("episodic", len(erows), len(erows)))
                 seen = {r["id"] for r in results}
                 for r in erows:
