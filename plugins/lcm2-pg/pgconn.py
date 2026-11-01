@@ -1,6 +1,7 @@
 """lcm2-pg PG connection layer. Pure psycopg (v3) — zero embedded-DB code (R3)."""
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import sys
@@ -239,3 +240,15 @@ def shutdown_pools():
             except Exception:
                 pass
         _pools.clear()
+
+
+# F-4: close every cached pool at interpreter exit. Without this, pool
+# objects die during Python finalisation and psycopg_pool's __del__ tries
+# to join its reaper threads -> stderr "PythonFinalizationError: cannot
+# join thread at interpreter shutdown" noise on otherwise-clean runs.
+# atexit runs in normal shutdown (before finalisation), where close is
+# clean and silent. Child processes (spawn/fork) import this module fresh
+# and create their own pools, so each registers its own hook; an
+# os._exit() child never runs atexit and keeps the old __del__ noise —
+# accepted, spawn children are transient.
+atexit.register(shutdown_pools)
