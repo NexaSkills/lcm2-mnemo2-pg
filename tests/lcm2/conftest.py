@@ -44,6 +44,21 @@ def dsn():
     except Exception as e:
         pytest.fail(f"lcm2 instance unreachable at {SOCKET}:54331 db={DB}: {e}"
                     " (start scripts/ensure_instance.sh; never falls back, R3)")
+    # Sweep throwaway schemas LEFT BY PREVIOUS runs before this one mints
+    # its own. WHY: the `schema` fixture DROPs in teardown — a run killed
+    # mid-suite (SIGKILL/timeout/Ctrl-C, incl. a concurrent lane's run being
+    # stopped) skips teardown and leaves lcm2_test_<uuid> behind; the F3
+    # residue tripwire then fails an UNRELATED later run (qa round showed
+    # exactly this). Sweep classes are throwaway by construction; profile
+    # schemas (lcm2_lcm2agent/lcm2_mnemo2agent/shared) never match.
+    import re
+    _family = re.compile(r"^(lcm2_test_.*|lcm2_probe.*|probe_.*|lcm2_dbg_.*)$")
+    with pgconn.connect(BASE_DSN, "public", ddl=True) as cx:
+        stale = [r["nspname"] for r in cx.query_dicts(
+            "select nspname from pg_namespace")
+            if _family.match(r["nspname"])]
+        for n in stale:
+            cx.execute(f'DROP SCHEMA IF EXISTS "{n}" CASCADE')
     return BASE_DSN
 
 

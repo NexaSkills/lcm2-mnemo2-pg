@@ -60,15 +60,22 @@ def test_register_exposes_all_15_tools_and_hooks(registered):
     ctx, eng = registered
     assert sorted(ctx.tools) == sorted(VENDOR_TOOLS)
     assert {"pre_llm_call", "subagent_start", "subagent_stop"} <= set(ctx.hooks)
-    # Real contract (plugin_entry.py:135-172): register() checks
-    # isinstance(ContextEngine) BEFORE registering — under pytest the REAL
-    # host base class is importable and the raw engine fails it, so the
-    # shim bridge registers instead: a ContextEngine subclass that wraps
-    # the factory's engine. Assert the guaranteed guarantee (delegate is
-    # the engine), accept the raw-identity route too (hosts/fakes without
-    # the base class get `is eng` via the raw path).
+    # REAL bridge contract (plugin_entry.py register()): register() builds
+    # the shim bridge (LCM2PgContextEngine, a real ContextEngine subclass
+    # that passes the host isinstance gate). The bridge constructs its OWN
+    # engine via shim._impl_class() — by design the same class/module the
+    # fixture's `eng` came from (import engine as E), but NOT the same
+    # instance, so `_impl is eng` was always stale. dsn/schema are the
+    # bridge's only constructor args: assert those + type identity (the
+    # genuine guarantees), and accept raw `is eng` for hosts/fakes taking
+    # the raw-engine fallback route.
     ce = ctx.context_engine
-    assert ce is eng or getattr(ce, "_impl", None) is eng
+    assert ce is eng or (
+        type(ce).__name__ == "LCM2PgContextEngine"
+        and type(getattr(ce, "_impl", None)).__name__ == "LCM2Engine"
+        and getattr(ce, "dsn", None) == eng.dsn
+        and getattr(ce, "schema", None) == eng.schema
+    )
 
 
 @pytest.mark.parametrize("name", VENDOR_TOOLS)
