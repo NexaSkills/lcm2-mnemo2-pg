@@ -20,8 +20,64 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+# R8 (P3STEP4): anchor()'s read-if-ready / else-exec is NOT atomic — two
+# concurrent register() calls raced into the rebuild path and one EXECUTED
+# A LIVE, FULLY-BUILT MODULE OBJECT in place (re-running its top-level
+# code clears its module dict first: the live one becomes an attribute-
+# less stub WHILE the other thread's loop iterates its tools ->
+# "KeyError('engine')/'KeyError('embed)'"), and a purge racing another
+# thread's exec hands back that stub -> "no attribute 'register'". One
+# process-global re-entrant lock serializes every anchor() body; the
+# gate is checked under the lock (no TOCTOU), exec windows stay as they
+# were. Registry cell located by key like the others (shared per proc).
+_LOCKKEY = "_mnemo2_lock_registry_ours"
+
+
+def _anchor_lock():
+    reg = sys.modules.get(_LOCKKEY)
+    if reg is None:
+        import types as _t
+        reg = _t.ModuleType(_LOCKKEY)
+        setattr(reg, "CELL", threading.RLock())
+        sys.modules[_LOCKKEY] = reg
+    return getattr(reg, "CELL")
+
+
+def _ready_module(name, cand):
+    """Registry/sys.modules candidate that is OURS and FULLY EXECUTED."""
+    return cand is not None and _mine(cand) and _is_ready(name, cand)
+
+
+def _settle_stubs(name):
+    """One exec of <name>.py is in flight on another thread: wait for it.
+    A concurrent register() purge may delete the binding mid-exec, so
+    poll BOTH the key and the identity registry. True = fully-executed
+    module exists; False = the executor died (caller rebuilds)."""
+    import time as _time
+    full = f"_mnemo2_impl_{name}"
+    deadline = _time.monotonic() + 60.0
+    while _time.monotonic() < deadline:
+        for cand in (sys.modules.get(full), _published().get(full)):
+            if _ready_module(name, cand):
+                return True
+        _time.sleep(0.005)
+    return False
+
+
+def _serve(name, mod):
+    """Publish an already-executed module under our keys (same package-
+    qualified / namespaced / gated-bare rule as the tail of anchor())."""
+    full = f"_mnemo2_impl_{name}"
+    sys.modules[full] = mod
+    _published()[full] = mod
+    if _PKG:
+        sys.modules[f"{_PKG}.{name}"] = mod
+    if name.startswith("_"):  # underscore-private: no host/stdlib importer
+        sys.modules[name] = mod
+    return mod
 _PKG = (__package__ or "").split(".")[0]
 _ANCHORED: set = set()  # names ever anchor()'d in this interpreter
 # Keys WE have ever published under, registry-style (module identity):
