@@ -162,12 +162,19 @@ class Conn:
             # The lock stays HELD to the end of the bootstrap transaction
             # (xact-scoped, no commit here — _own_ddl commits at the end),
             # which also serializes its CREATE EXTENSION against pg_depend.
+            # Lock is INSTANCE-GLOBAL (hashed on dsn only): pg_type,
+            # pg_depend and pg_extension are database-global — concurrent
+            # CREATE TABLE IF NOT EXISTS in DIFFERENT schemas still race
+            # on pg_type_typname_nsp_index (the observed failure). Boot-
+            # straps are IF-NOT-EXISTS-idempotent, so one global serial
+            # lock is exactly what's needed; classid discriminator kept
+            # for schema-level diagnostics only.
             try:
                 self._cx.execute(
                     "SELECT pg_advisory_xact_lock("
                     "hashtext(%s)::bigint, "
                     "(SELECT COALESCE(max(classid),0) FROM pg_class)::bigint)",
-                    (f"{self.dsn}\x1f{self.schema}",))
+                    (self.dsn,))
             except Exception:
                 self._cx.rollback()
             self._own_ddl()
