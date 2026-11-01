@@ -356,9 +356,9 @@ _SHARED_EXCLUDE = {
 # banks. Views (not tables): DROP SCHEMA shared CASCADE can never orphan a
 # private schema (the view just errors until the next ensure — YAGNI-safe).
 _SHARED_VIEWS = [
-    "DO $$ BEGIN CREATE VIEW shared_memory AS SELECT * FROM {SH}.working_memory; EXCEPTION WHEN duplicate_table THEN NULL; END $$",
-    "DO $$ BEGIN CREATE VIEW shared_embeddings AS SELECT * FROM {SH}.memory_embeddings; EXCEPTION WHEN duplicate_table THEN NULL; END $$",
-    "DO $$ BEGIN CREATE VIEW shared_canonical AS SELECT * FROM {SH}.canonical_facts; EXCEPTION WHEN duplicate_table THEN NULL; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.working_memory') IS NOT NULL THEN CREATE VIEW shared_memory AS SELECT * FROM {SH}.working_memory; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.memory_embeddings') IS NOT NULL THEN CREATE VIEW shared_embeddings AS SELECT * FROM {SH}.memory_embeddings; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.canonical_facts') IS NOT NULL THEN CREATE VIEW shared_canonical AS SELECT * FROM {SH}.canonical_facts; END IF; END $$",
 ]
 
 _SANDBOX_SHARED_RE = __import__("re").compile(r"^[a-z0-9_]+$")
