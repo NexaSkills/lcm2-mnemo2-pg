@@ -107,15 +107,15 @@ class Engine:
                importance_weight: float | None = None,
                temporal_weight: float = 0.0, query_time: str | None = None,
                temporal_halflife: float | None = None,
-               explain: bool = False,        include_expired: bool = False) -> dict:
+               explain: bool = False, include_expired: bool = False) -> dict:
         if not query or not query.strip():
             return {"ok": False, "error": "empty query", "results": []}
-        _ = 0  # (expiry handled inline below)
         vw = vec_weight if vec_weight is not None else DEFAULT_VEC_W
         fw = fts_weight if fts_weight is not None else DEFAULT_FTS_W
         iw = importance_weight if importance_weight is not None else DEFAULT_IMP_W
         hl = temporal_halflife or HALFLIFE_H
         qvec = _embed.embed_text(query)
+        qvec_str = _embed.to_pg_vector(qvec)
         now = _now()
         if query_time:
             try:
@@ -123,9 +123,10 @@ class Engine:
             except ValueError:
                 pass
         age_hours_col = (
-            "EXTRACT(EPOCH FROM (%s::timestamptz - created_at)) / 3600.0")
+            "EXTRACT(EPOCH FROM (%s::timestamptz - w.created_at)) / 3600.0")
         temporal_expr = f"POWER(0.5, GREATEST({age_hours_col}, 0) / {hl})"
-        exp_filter = "" if include_expired else " AND (valid_until IS NULL OR valid_until >= (%s::timestamptz::date))"
+        exp_filter = (" AND (valid_until IS NULL OR valid_until >= "
+                      "%s::timestamptz::date)") if not include_expired else ""
         now_param = now.isoformat()
 
         sql_working = f"""
@@ -137,7 +138,7 @@ class Engine:
                        {temporal_expr} AS temporal
                 FROM working_memory w
                 LEFT JOIN memory_embeddings e ON e.memory_id = w.id
-                WHERE 1=1 AND (valid_until IS NULL OR valid_until >= %s::timestamptz::date)
+                WHERE 1=1{exp_filter}
                 ORDER BY (w.search @@ plainto_tsquery('english', %s)) DESC,
                          w.created_at DESC
                 LIMIT 200
@@ -167,9 +168,11 @@ class Engine:
         results: list[dict] = []
         tiers = []
         with self._cx(bank) as cx:
-            rows = cx.query_dicts(sql_working,
-                                  (qvec_str := _embed.to_pg_vector(qvec), query,
-                                   query, vw, fw, iw, temporal_weight, limit))
+            params = [qvec_str, query, query]
+            if exp_filter:
+                params.append(now_param)
+            params += [query, vw, fw, iw, temporal_weight, limit]
+            rows = cx.query_dicts(sql_working, params)
             working_hit = [r for r in rows if r["fts"] > 0 or r["vec_sim"] > 0.05]
             tiers.append(("working", len(rows), len(working_hit)))
             for r in rows[:limit]:

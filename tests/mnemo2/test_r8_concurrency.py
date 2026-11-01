@@ -15,6 +15,19 @@ from conftest import register_plugin
 N = 8  # writers per agent
 
 
+def _mk(dsn, b, sh, request):
+    import pgconn
+    with pgconn.connect(dsn, "public", ddl=True) as cx:
+        cx.execute(f'CREATE SCHEMA "{b}"')
+        cx.execute(f'CREATE SCHEMA "{sh}"')
+
+    def _drop():
+        with pgconn.connect(dsn, "public", ddl=True) as cx:
+            for s in (b, sh):
+                cx.execute(f'DROP SCHEMA IF EXISTS "{s}" CASCADE')
+    request.addfinalizer(_drop)
+
+
 def _writer(ctx, agent, results, errors):
     try:
         for i in range(N):
@@ -32,11 +45,7 @@ def test_parallel_writers_no_lost_writes(dsn, priv_schema, request):
     import pgconn
     b = "mnemo2_test_" + uuid.uuid4().hex[:10]
     sh = "shared_test_" + uuid.uuid4().hex[:10]
-    with pgconn.connect(dsn, "public", ddl=True) as cx:
-        cx.execute(f'CREATE SCHEMA "{b}"; CREATE SCHEMA "{sh}"')
-    request.addfinalizer(lambda: [
-        pgconn.connect(dsn, "public", ddl=True).__enter__().execute(
-            f'DROP SCHEMA IF EXISTS "{s}" CASCADE') for s in (b, sh)])
+    _mk(dsn, b, sh, request)
 
     ctx_a = register_plugin(dsn, priv=priv_schema, shared=sh)[1]
     ctx_b = register_plugin(dsn, priv=b, shared=sh)[1]
@@ -62,12 +71,7 @@ def test_concurrent_shared_surface(dsn, priv_schema, request):
     import pgconn
     b = "mnemo2_test_" + uuid.uuid4().hex[:10]
     sh = "shared_test_" + uuid.uuid4().hex[:10]
-    with pgconn.connect(dsn, "public", ddl=True) as cx:
-        cx.execute(f'CREATE SCHEMA "{b}"; CREATE SCHEMA "{sh}"')
-    request.addfinalizer(lambda: [
-        pgconn.connect(dsn, "public", ddl=True).__enter__().execute(
-            f'DROP SCHEMA IF EXISTS "{s}" CASCADE') for s in (b, sh)])
-
+    _mk(dsn, b, sh, request)
     ctx_a = register_plugin(dsn, priv=priv_schema, shared=sh)[1]
     ctx_b = register_plugin(dsn, priv=b, shared=sh)[1]
     errors: list[str] = []

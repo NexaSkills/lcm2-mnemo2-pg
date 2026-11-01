@@ -10,6 +10,19 @@ import uuid
 from conftest import register_plugin
 
 
+def _mk(dsn, b, sh, request):
+    import pgconn
+    with pgconn.connect(dsn, "public", ddl=True) as cx:
+        cx.execute(f'CREATE SCHEMA "{b}"')
+        cx.execute(f'CREATE SCHEMA "{sh}"')
+
+    def _drop():
+        with pgconn.connect(dsn, "public", ddl=True) as cx:
+            for s in (b, sh):
+                cx.execute(f'DROP SCHEMA IF EXISTS "{s}" CASCADE')
+    request.addfinalizer(_drop)
+
+
 def _agent_ctx(dsn, priv, shared):
     mod, ctx = register_plugin(dsn, priv=priv, shared=shared)
     return ctx
@@ -21,11 +34,7 @@ def test_shared_visible_from_two_agents(dsn, priv_schema, request):
     a = priv_schema
     b = "mnemo2_test_" + uuid.uuid4().hex[:10]
     sh = "shared_test_" + uuid.uuid4().hex[:10]
-    with pgconn.connect(dsn, "public", ddl=True) as cx:
-        cx.execute(f'CREATE SCHEMA "{b}"; CREATE SCHEMA "{sh}"')
-    request.addfinalizer(lambda: [
-        pgconn.connect(dsn, "public", ddl=True).__enter__().execute(
-            f'DROP SCHEMA IF EXISTS "{s}" CASCADE') for s in (b, sh)])
+    _mk(dsn, b, sh, request)
 
     marker = "shared-marker-" + uuid.uuid4().hex[:8]
     ctx_a = _agent_ctx(dsn, a, sh)
@@ -72,11 +81,7 @@ def test_private_isolation_both_ways(dsn, priv_schema, request):
     a = priv_schema
     b = "mnemo2_test_" + uuid.uuid4().hex[:10]
     sh = "shared_test_" + uuid.uuid4().hex[:10]
-    with pgconn.connect(dsn, "public", ddl=True) as cx:
-        cx.execute(f'CREATE SCHEMA "{b}"; CREATE SCHEMA "{sh}"')
-    request.addfinalizer(lambda: [
-        pgconn.connect(dsn, "public", ddl=True).__enter__().execute(
-            f'DROP SCHEMA IF EXISTS "{s}" CASCADE') for s in (b, sh)])
+    _mk(dsn, b, sh, request)
 
     secret = "private-only-" + uuid.uuid4().hex[:8]
     ctx_a = _agent_ctx(dsn, a, sh)
