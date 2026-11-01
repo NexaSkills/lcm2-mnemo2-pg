@@ -57,21 +57,22 @@ def register(ctx, engine_factory=None):
             except Exception as exc:
                 logger.warning("lcm2-pg tool %s registration failed: %s", name, exc)
 
-    # context engine (compression path for the host). The host gates this
-    # on isinstance(agent.context_engine.ContextEngine); the plugin engine
-    # is duck-typed and never imports host modules (R3), so on a stock host
-    # this call warns-and-ignores — EXPECTED. The host-native engine path is
-    # context.engine: lcm2-pg resolved through plugins/context_engine/lcm2-pg
-    # (subclass shim reusing this engine's methods verbatim); tools reach the
-    # model via that engine's get_tool_schemas()/handle_tool_call() and via
-    # the registry registrations above. Keep the call: on hosts that accept
-    # duck-typed engines it activates the engine directly.
+    # context engine (compression path for the host). The host gates
+    # register_context_engine on isinstance(agent.context_engine.ContextEngine)
+    # and the plugin engine is duck-typed by design (R3: plugin modules never
+    # import host modules). So register the ENGINE BRIDGE — the same
+    # LCM2Engine wrapped by the ContextEngine subclass in
+    # context_engine_shim.py — not the raw duck-typed object. The shim's
+    # register() does exactly that; running it here reuses that single
+    # definition instead of duplicating the wrapper. On hosts whose gate is
+    # stricter or absent, the call is harmless (warn-and-ignore / accepted).
     register_context_engine = getattr(ctx, "register_context_engine", None)
     if callable(register_context_engine):
         try:
-            register_context_engine(get_engine())
+            from context_engine_shim import register as _bridge_register
+            _bridge_register(ctx)
         except Exception as exc:
-            logger.debug("lcm2-pg register_context_engine skipped: %s", exc)
+            logger.debug("lcm2-pg context engine bridge skipped: %s", exc)
 
     # hooks
     register_hook = getattr(ctx, "register_hook", None)

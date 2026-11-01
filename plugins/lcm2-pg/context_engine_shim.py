@@ -1,53 +1,57 @@
-"""lcm2-pg context-engine bridge (loaded by the context-engine capture path).
+"""lcm2-pg context-engine bridge (package attribute; loaded file-anchored).
 
-The context-engine loader's capture calls ``register(ctx)`` on THIS module
-when ``context.engine: lcm2-pg`` resolves to this directory — the loader
-prefers a sibling file over the package ``__init__`` so the bridge never
-re-runs the general plugin registration. It instantiates
-``LCM2PgContextEngine`` — a real ``ContextEngine`` subclass (isinstance
-gate satisfied) that delegates every protocol method to the plugin's own
-LCM2Engine, imported file-anchored from this directory. The plugin
-modules stay host-import-free (R3); this file is the single bridge.
+context_engine_shim.py — NOT named engine.py on purpose: the host checkout
+owns a top-level `engine` package, and under the context-engine capture
+loader `sys.modules['engine']` may already hold the HOST's package. A file
+named engine.py here would then be shadowed by that package for every
+bare `import engine` in this directory (silent foreign LCM2Engine-less
+import). This module holds ONLY the host-facing bridge:
+
+  LCM2PgContextEngine — a real agent.context_engine.ContextEngine subclass
+  (isinstance gate) that delegates every protocol method VERBATIM to the
+  plugin's own LCM2Engine (single implementation; R3 isolation kept: the
+  plugin modules never import host code, this bridge is the sole bridge).
+
+The plugin engine class is resolved file-anchored from this directory via
+_selfimport.anchor("engine"), then wrapped — never subclassed at import
+time (the class body would freeze a wrong base). The wrapper delegates;
+delegation survives any module-name confusion, subclassing does not.
 """
 from __future__ import annotations
 
-import importlib.util
-import os
-import pathlib
 import sys
 
 from agent.context_engine import ContextEngine
 
+_HERE = __file__
+import os as _os
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
 
-def _plugin_module(name: str):
-    """Import <this dir>/<name>.py by FILE under a namespaced module name
-    (bare `engine`/`tools`/`schemas` on sys.modules belong to whoever put
-    them there — the host repo root does too — never resolve through them)."""
-    here = pathlib.Path(__file__).resolve().parent
-    full = f"{__name__}_impl_{name}"
-    if full in sys.modules:
-        return sys.modules[full]
-    sp = str(here)
-    if sp not in sys.path:  # the plugin modules import each other bare
-        sys.path.insert(0, sp)
-    spec = importlib.util.spec_from_file_location(full, here / f"{name}.py")
-    if spec is None or spec.loader is None:
-        raise ImportError(f"lcm2-pg bridge: cannot locate {name}.py in {here}")
+_impl_cache: list = []
+
+
+def _impl_class() -> type:
+    """The plugin's LCM2Engine, loaded by FILE from THIS directory."""
+    if _impl_cache:
+        return _impl_cache[0]
+    import importlib.util
+    # Names on sys.path can lie (host `engine` package); file location cannot.
+    path = _os.path.join(_HERE, "engine.py")
+    spec = importlib.util.spec_from_file_location("lcm2_pg_engine", path)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise ImportError(f"lcm2-pg: cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[full] = mod
+    sys.modules.setdefault("lcm2_pg_engine", mod)
     spec.loader.exec_module(mod)
-    return mod
+    _impl_cache.append(mod.LCM2Engine)
+    return mod.LCM2Engine
 
 
 class LCM2PgContextEngine(ContextEngine):
-    """Host ContextEngine wrapping the plugin engine (single
-    implementation). Constructor takes no args: dsn + schema bind from the
-    environment inside LCM2Engine (schema = lcm2_<basename(HERMES_HOME)>,
-    never pinned)."""
+    """Host ContextEngine; every call delegates to the plugin engine."""
 
     def __init__(self, dsn=None, schema=None):
-        eng = _plugin_module("engine")
-        self._impl = eng.LCM2Engine(dsn=dsn, schema=schema)
+        self._impl = _impl_class()(dsn=dsn, schema=schema)
 
     @property
     def name(self) -> str:
@@ -58,19 +62,15 @@ class LCM2PgContextEngine(ContextEngine):
         pass
 
     def __getattr__(self, item):
-        # Anything the base does NOT define (get_tool_schemas,
-        # handle_tool_call, get_status, clone_for_agent, update_model, ...)
-        # resolves on the plugin engine. Names the base DOES define resolve
-        # on the wrapper via MRO and are forwarded explicitly below —
-        # __getattr__ never sees them.
         if item.startswith("_"):
             raise AttributeError(item)
-        return getattr(self.__dict__["_impl"], item)
+        return getattr(self._impl, item)
 
-    # -- abstract protocol (real defs required; abstractness is decided at
-    # class-creation, __getattr__ cannot satisfy it) -----------------------
+    # Base-class methods need explicit forwards: the base's concrete
+    # defaults would otherwise shadow __getattr__ (empty schemas,
+    # "Unknown tool", empty status). One-line dispatch each.
     def update_from_response(self, usage) -> None:
-        self._impl.update_from_response(usage)
+        return self._impl.update_from_response(usage)
 
     def should_compress(self, prompt_tokens=None) -> bool:
         return self._impl.should_compress(prompt_tokens)
@@ -81,8 +81,6 @@ class LCM2PgContextEngine(ContextEngine):
                                    focus_topic=focus_topic, force=force,
                                    memory_context=memory_context)
 
-    # -- base-CONCRETE methods the host calls (forwarding beats the base
-    # defaults, which would answer empty schemas / Unknown tool) -----------
     def get_tool_schemas(self):
         return self._impl.get_tool_schemas()
 
@@ -119,13 +117,10 @@ class LCM2PgContextEngine(ContextEngine):
     def prune_tool_results_only(self, messages, current_tokens=None):
         return self._impl.prune_tool_results_only(messages, current_tokens)
 
-    def clone_for_agent(self):
-        """Fresh engine over the same durable backend (DSN + schema), never
-        a deepcopy of locks/pools. Host calls this with no args; tolerate
-        extras."""
+    def clone_for_agent(self, *args, **kwargs):
         return LCM2PgContextEngine(dsn=self._impl.dsn, schema=self._impl.schema)
 
 
 def register(ctx):
-    """Context-engine capture entry: hand the host the bridge engine."""
+    """Category-capture entry (context engine slot): the bridge engine."""
     ctx.register_context_engine(LCM2PgContextEngine())

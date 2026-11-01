@@ -12,6 +12,10 @@ author: "NexaSkills (upstream reference: stephenschoettler/hermes-lcm)"
 # Bare-env note: with no HERMES_HOME, pgconn.agent_schema() derives
 # lcm2_default and engine bootstrap creates it on first connect (schema
 # derivation is by HERMES_HOME, never pinned).
+provides_hooks:
+  - pre_llm_call
+  - subagent_start
+  - subagent_stop
 provides_tools:
   - lcm_grep
   - lcm_recall

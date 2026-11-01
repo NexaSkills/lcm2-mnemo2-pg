@@ -363,8 +363,8 @@ class LCM2Engine:
                 or os.environ.get("HERMES_SESSION_ID") or "default")
 
     def get_tool_schemas(self) -> list:
-        import schemas
-        return [schemas.TOOLS[n] for n in sorted(schemas.TOOLS)]
+        S = _sib("schemas")
+        return [S.TOOLS[n] for n in sorted(S.TOOLS)]
 
     def handle_tool_call(self, name: str, args: dict, **kwargs) -> str:
         # NEVER import the bare name `tools` here: the host root and other
