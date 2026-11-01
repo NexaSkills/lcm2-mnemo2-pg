@@ -15,6 +15,13 @@ import sys as _sys
 
 logger = logging.getLogger("lcm2-pg")
 
+try:  # F-1 diagnostics (env-gated, no-op unless LCM2_DIAG=1)
+    import _diag_watch as _dw  # noqa
+
+    _dw.start()
+except Exception:
+    pass
+
 __version__ = "0.2.0"
 
 
@@ -129,15 +136,39 @@ def register(ctx, engine_factory=None):
     if callable(register_context_engine):
         # Try the raw duck-typed engine FIRST: test/host fakes that record
         # it (ctx.context_engine) or accept anything get the real engine —
-        # no hidden wrapper. A strict isinstance gate (stock host) rejects it
-        # with TypeError; only THEN fall back to the shim bridge, which
-        # registers the same engine wrapped in the ContextEngine subclass.
+        # no hidden wrapper. BUT the stock host gate is warn-and-ignore
+        # (returns None on isinstance failure, no exception), so an
+        # exception-only fallback never fires and the slot silently stays
+        # empty ('does not inherit from ContextEngine. Ignoring.'): check
+        # isinstance BEFORE registering and fall back to the shim bridge,
+        # which wraps the same engine in the ContextEngine subclass.
         try:
-            register_context_engine(factory())
+            from agent.context_engine import ContextEngine as _CE
+            raw_ok = isinstance(factory(), _CE)
         except Exception:
+            raw_ok = False  # no host base class visible: bridge is safe
+        if raw_ok:
             try:
-                from context_engine_shim import register as _bridge_register
-                _bridge_register(ctx)
+                register_context_engine(factory())
+            except Exception:
+                pass
+        else:
+            # Fall back to the shim bridge (ContextEngine subclass wrapper
+            # around the same engine). File-anchored so it works under
+            # both loaders regardless of the bare-name purge.
+            try:
+                _here = os.path.dirname(os.path.abspath(__file__))
+                _ce_shim = _sys.modules.get("_lcm2_pg_bridge_ce_shim")
+                if _ce_shim is None or not getattr(_ce_shim, "register", None):
+                    import importlib.util as _u
+                    _sp = _u.spec_from_file_location(
+                        "_lcm2_pg_bridge_ce_shim",
+                        os.path.join(_here, "context_engine_shim.py"))
+                    _md = _u.module_from_spec(_sp)
+                    _sys.modules["_lcm2_pg_bridge_ce_shim"] = _md
+                    _sp.loader.exec_module(_md)
+                    _ce_shim = _md
+                _ce_shim.register(ctx)
             except Exception as exc:
                 logger.debug("lcm2-pg context engine bridge skipped: %s", exc)
 

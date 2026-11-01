@@ -31,6 +31,12 @@ _ANCHORED: set = set()  # names ever anchor()'d in this interpreter
 # `import tools.<sub>` ('tools' is not a package — F1 boot crash).
 HOST_BARE = {"tools", "engine", "pgconn", "schemas", "command", "hooks",
              "ddl", "rollup_periods"}
+# Bare names the HOST ROOT FLAT owns (files <root>/<name>.py — the
+# interpreter itself: os/io/sys). anchor() may NEVER publish under these:
+# the import system re-imports them from arbitrary frames all session and
+# would bind our flat file (ModuleNotFoundError: 'tools' is not a package,
+# the F1 crash class).
+NEVER_PUBLISH = {"os", "io", "sys", "types", "json", "time", "logging"}
 
 
 class _SibFinder:
@@ -176,7 +182,7 @@ def anchor(name: str, filename: str | None = None):
     _ANCHORED.add(name)
     evicted = {}
     publish = [f"{_PKG}.{name}"] if _PKG else [name]
-    if not name.startswith("_"):
+    if not name.startswith("_") and name not in NEVER_PUBLISH:
         try:
             _sp = _host_pkg_owner(name)
             if _sp is None or _sp.submodule_search_locations is None:
