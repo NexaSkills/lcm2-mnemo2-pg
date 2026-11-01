@@ -185,8 +185,21 @@ def anchor(name: str, filename: str | None = None):
     `name` (plus `<pkg>.<name>`), returning the module."""
     filename = filename or name
     path = os.path.join(_HERE, filename + ".py")
-    for candidate in (name, f"{_PKG}.{name}" if _PKG else None):
+    # F-1 (P2FLIP3): a bare key the host owns as a PACKAGE is never ours to
+    # take — not via early return, not via the publish loop. Host boot
+    # threads import `tools.<sub>` concurrently with our register() exec
+    # windows; importlib resolves the parent through sys.modules regardless
+    # of thread, so a flat file published under 'tools' (even for a
+    # microsecond) strands a poisoned module inside the host's import lock
+    # ('tools' is not a package — the boot crash class).
+    _bare_host_pkg = bool(sys.modules.get(name)) and getattr(
+        sys.modules.get(name), "__path__", None) and not _mine(
+        sys.modules[name])
+    for candidate in (f"{_PKG}.{name}" if _PKG else None,
+                      f"_lcm2_impl_{name}", name):
         if candidate and candidate in sys.modules and _mine(sys.modules[candidate]):
+            if candidate == name and _bare_host_pkg:
+                continue  # stale OURS binding under a now-host-owned key
             return sys.modules[candidate]
     if not os.path.isfile(path):
         raise ImportError(f"lcm2-pg: {filename}.py not found in {_HERE}")
@@ -275,6 +288,16 @@ def anchor(name: str, filename: str | None = None):
             publish.append(name)  # standalone world: the bare name is ours
         elif sys.modules.get(name) is not None and _mine(sys.modules[name]):
             publish.append(name)  # we already legitimately own the binding
+    # F-1 (P2FLIP3, probe_writer5-proven): the clause above can be TRUE yet
+    # STALE — a host boot thread can (re)import the host's 'tools' PACKAGE
+    # *during* our exec (importlib writes sys.modules['tools'] on OUR
+    # frame, under the import lock) and release() then reinstates our flat
+    # file over it via the eviction bookkeeping. The package binding is
+    # live and correct NOW; never overwrite a live host-package binding.
+    _cur = sys.modules.get(name)
+    if name in publish and _cur is not None and _cur is not mod and \
+            getattr(_cur, "__path__", None) and not _mine(_cur):
+        publish.remove(name)
     for n in dict.fromkeys(publish):
         cur = sys.modules.get(n)
         if cur is not None and not _mine(cur):
@@ -336,9 +359,25 @@ def release_all() -> None:
     package). No-op-safe: release() only deletes a binding that is still
     OUR module and only reinstates what anchor() itself evicted.
     """
+    # F-1 (P2FLIP3): drop the eviction bookkeeping FIRST, then delete only
+    # bindings that are OURS. Reinstating evicted objects risks writing a
+    # STALE host module (an old package instance from before a host reinit)
+    # over the live binding; importlib rebinds the current path finder's
+    # package into sys.modules itself on the next host import, which is the
+    # correct restore. So: no setdefault reinstatement here at all.
     for n in sorted(_ANCHORED):
         try:
-            release(n)
+            m = sys.modules.get(f"_lcm2_impl_{n}") or sys.modules.get(
+                f"{_PKG}.{n}" if _PKG else n)
+            if m is not None:
+                m.__dict__.pop("_lcm2_evicted", None)
+        except Exception:  # pragma: no cover
+            pass
+    for n in sorted(_ANCHORED):
+        try:
+            for k in [n] + ([f"{_PKG}.{n}"] if _PKG else []):
+                if _mine(sys.modules.get(k)):
+                    del sys.modules[k]
         except Exception:  # pragma: no cover - best-effort cleanup
             pass
     # Belt for names published during exec by a route that never reaches
