@@ -135,7 +135,8 @@ class LCM2Engine:
                 "select source_ids from summary_nodes"
                 " where session_id=%s and source_type='messages'", (session_id,))
             for r in rows:
-                covered.update(json.loads(r[0]))
+                v = r[0]
+                covered.update(v if isinstance(v, list) else json.loads(v))
             msgs = cx.query_dicts(
                 "select store_id, role, content from messages"
                 " where session_id=%s and pinned = false"

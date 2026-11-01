@@ -50,6 +50,8 @@ def registered(dsn, schema):
     eng = E.LCM2Engine(dsn=dsn, schema=schema)
     entry = importlib.import_module("plugin_entry")
     ctx = FakeCtx()
+    # one FakeCtx per test; the registered() fixture is function-scoped, so
+    # sibling tests in the same run never race on its dicts
     entry.register(ctx, engine_factory=lambda: eng)
     return ctx, eng
 

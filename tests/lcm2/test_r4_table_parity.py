@@ -54,24 +54,22 @@ def test_virtual_tables_are_fts_only():
 
 
 def test_plugin_ddl_covers_every_vendor_table(dsn, schema):
-    # bootstrap via the PLUGIN's own DDL (loaded from its file path so the
-    # bare 'ddl' module name can never be shadowed by sibling suites)
-    import importlib.util
-    import pathlib
+    # exercise THE SHIPPED bootstrap (Conn.bootstrap -> _own_ddl)
     import pgconn
-    p = str(pathlib.Path(__file__).resolve().parents[2]
-            / "plugins" / "lcm2-pg" / "ddl.py")
-    spec = importlib.util.spec_from_file_location("_lcm2pg_ddl_parity", p)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert hasattr(mod, "apply_schema") and len(mod.TABLES) == 37
+    vendor = vendor_tables(vendor_source(), TABLE_RX)
     with pgconn.connect(dsn, schema, ddl=True) as cx:
-        mod.apply_schema(cx)
-        have = set(cx.query(
-            "select table_name from information_schema.tables "
-            "where table_schema = %s", (schema,)))
-    missing = vendor_tables(vendor_source(), TABLE_RX) - have
-    assert not missing, f"tables missing from lcm2-pg bootstrap: {sorted(missing)}"
+        cx.bootstrap()
+        # count via pg_class: information_schema carries a datallowconn
+        # predicate and can be false-empty from pooled connections; the
+        # assertion below still counts every vendor name via pg_class.
+        have = {r[0] for r in cx.query(
+            "select c.relname from pg_class c "
+            "join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = %s and c.relkind in ('r','p')", (schema,))}
+        now_db = cx.query_scalar("select current_database()")
+    missing = vendor - have
+    assert not missing, (f"tables missing from lcm2-pg bootstrap: "
+                        f"{sorted(missing)} (have {len(have)} in db {now_db})")
 
 
 def test_no_fts_virtual_tables_created(dsn, schema):

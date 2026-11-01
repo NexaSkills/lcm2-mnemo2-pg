@@ -8,7 +8,7 @@ import tools as T
 
 def handle(raw: str, engine) -> str:
     parts = (raw or "").strip().split(None, 1)
-    sub, rest = (parts + [""])[:2]
+    sub, rest = (parts + ["", ""])[:2]
     if sub in ("", "status"):
         return T.lcm_status({}, engine=engine)
     if sub == "inspect":

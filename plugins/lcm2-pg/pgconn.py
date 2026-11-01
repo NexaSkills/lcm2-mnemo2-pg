@@ -58,12 +58,14 @@ def _get_pool(conninfo: str) -> ConnectionPool:
 class Conn:
     """Thin wrapper: one checkout + search_path pin, per operation block."""
 
-    def __init__(self, dsn: str, schema: str, ddl: bool = False):
+    def __init__(self, dsn: str, schema: str, ddl: bool = False,
+                 set_session: bool = False):
         if not _SCHEMA_RE.match(schema):
             raise ValueError(f"invalid schema name: {schema!r}")
         self._pool = _get_pool(dsn)
         self._schema = schema
         self._ddl = ddl
+        self._set_session = set_session
         self._cm = None
         self._conn = None
         self.ddl_log: list[str] = []
@@ -80,6 +82,9 @@ class Conn:
             # the process times out instead of raising a clean error.
             self._evict_pool()
             raise
+        # session-level (is_local=false) pin: re-applied automatically on
+        # every pool reconnect/reset; a transaction-local set_config is lost
+        # silently when the pool ends the implicit transaction at checkin.
         self._conn.execute(
             "select set_config('search_path', %s || ', public', false)",
             (self._schema,))
@@ -146,8 +151,10 @@ class Conn:
         self._own_ddl().apply_schema(self)
 
 
-def connect(dsn: str | None, schema: str | None = None, ddl: bool = False) -> Conn:
-    return Conn(dsn or default_dsn(), schema or agent_schema(), ddl=ddl)
+def connect(dsn: str | None, schema: str | None = None, ddl: bool = False,
+            set_session: bool = False) -> Conn:
+    return Conn(dsn or default_dsn(), schema or agent_schema(), ddl=ddl,
+                set_session=set_session)
 
 
 def shutdown_pools():

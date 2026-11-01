@@ -49,8 +49,10 @@ def _conn(engine):
 
 
 def _session(engine, args):
-    sid = args.get("session_id") or os.environ.get("HERMES_SESSION_ID") or ""
-    return sid or None
+    # HERMES_SESSION_ID is only the fallback: an ambient value (a sibling
+    # test or the host's own env) must never override an explicit
+    # args.session_id.
+    return args.get("session_id") or os.environ.get("HERMES_SESSION_ID") or None
 
 
 # ---------------------------------------------------------------- search
@@ -73,6 +75,12 @@ def lcm_grep(args, *, engine=None, **kw):
             where.append(col)
             ts = float(args[key])
             params.append(datetime.fromtimestamp(ts, tz=timezone.utc))
+    if tsq:
+        where.append("search @@ plainto_tsquery('english', %s)")
+        params.append(query)
+    elif query:
+        where.append("content ilike %s")
+        params.append(f"%{query}%")
     sql = ("select store_id, session_id, role, timestamp,"
            " left(content, 240),"
            " ts_rank(search, plainto_tsquery('english', %s))"
@@ -80,29 +88,22 @@ def lcm_grep(args, *, engine=None, **kw):
     p = [query] + params
     if where:
         sql += " where " + " and ".join(where)
-    if tsq:
-        sql += " and search @@ plainto_tsquery('english', %s)"
-        p.append(query)
-    elif query:
-        sql += " and content ilike %s"
-        p.append(f"%{query}%")
     order = "order by timestamp desc" if args.get("sort", "recency") == "recency" \
         else "order by ts_rank(search, plainto_tsquery('english', %s)) desc"
     sql += (" " + order + " limit %s")
-    if args.get("sort", "recency") != "recency" and tsq:
-        p.insert(1, query) if False else None
     p.append(limit)
     with _conn(e) as cx:
         rows = cx.query(sql, p)
-    nodes = []
     nsql = ("select node_id, session_id, depth, left(summary,240),"
             " ts_rank(search, plainto_tsquery('english', %s)) from summary_nodes")
+    ncond = ["(search @@ plainto_tsquery('english', %s) or summary ilike %s)"]
+    nparam = [query, f"%{query}%"]
     if sid and scope == "current":
-        nsql += " where session_id = %s"
-    nsql += (" and (search @@ plainto_tsquery('english', %s) or summary ilike %s)"
-             " order by created_at desc limit %s")
+        ncond.insert(0, "session_id = %s")
+        nparam.insert(0, sid)
+    nsql += " where " + " and ".join(ncond) + " order by created_at desc limit %s"
     with _conn(e) as cx:
-        nodes = cx.query(nsql, [query] + ([sid] if sid and scope == "current" else []) + [query, f"%{query}%", limit])
+        nodes = cx.query(nsql, [query] + nparam + [limit])
     return _out({
         "mode": args.get("mode", "full_text"),
         "query": query,
@@ -155,8 +156,8 @@ def lcm_recent(args, *, engine=None, **kw):
             " order by period_start desc limit %s", (lo, hi, int(args.get("limit") or 10)))
         if not rows:  # honest leaf fallback
             rows = cx.query(
-                "select null, min(created_at), left(summary,300) from summary_nodes"
-                " where created_at >= %s and created_at < %s group by 1",
+                "select null, min(created_at), max(left(summary,300)) from summary_nodes"
+                " where created_at >= %s and created_at < %s",
                 (lo, hi))
     return _out({"period": label, "ready_rollups": [
         {"rollup_id": r[0], "period_start": str(r[1]), "snippet": r[2]}
@@ -220,7 +221,9 @@ def lcm_expand(args, *, engine=None, **kw):
             (int(nid),))
         sources = []
         if rows and rows[0][2]:
-            ids = json.loads(rows[0][2])
+            ids = rows[0][2]
+            if isinstance(ids, str):
+                ids = json.loads(ids)
             if ids:
                 if rows[0][3] == "messages":
                     sources = cx.query(
@@ -256,7 +259,9 @@ def lcm_describe(args, *, engine=None, **kw):
     if not node:
         return _out({"error": f"no node {nid}"}, "lcm_describe")
     n = node[0]
-    ids = json.loads(n["source_ids"])
+    ids = n["source_ids"]
+    if isinstance(ids, str):
+        ids = json.loads(ids)
     return _out({
         "node_id": int(nid), "session_id": n["session_id"], "depth": n["depth"],
         "token_count": n["token_count"], "source_type": n["source_type"],
@@ -307,7 +312,7 @@ def lcm_query_state(args, *, engine=None, **kw):
         sql += " and kind = any(%s)"
         p.append(list(args["kinds"]))
     sql += " order by valid_at desc limit %s"
-    limit = min(int(args.get("limit") or 25), 50)
+    p.append(min(int(args.get("limit") or 25), 50))
     with _conn(e) as cx:
         rows = cx.query(sql, p)
     return _out({"subject_key": subject, "assertions": [
@@ -374,15 +379,63 @@ def lcm_evidence_pack(args, *, engine=None, **kw):
 _RETRIEVE_EPISODES = {}
 
 
+def _episode_store(engine):
+    """DB-backed episode persistence (survives across tool calls).
+
+    A one-shot host may load the plugin module per call, so a pure
+    process-dict would forget episodes between start/search/finish. The
+    canonical state lives in lcm_trajectory_states (a carried-over vendor
+    table); the dict stays as an in-process cache.
+    """
+    try:
+        with _conn(engine) as cx:
+            rows = cx.query_dicts(
+                "select state_key, state from lcm_trajectory_states"
+                " where state_key like 'retrieve_episode:%'")
+            for r in rows:
+                rid = r["state_key"].split(":", 1)[1]
+                if rid not in _RETRIEVE_EPISODES:
+                    _RETRIEVE_EPISODES[rid] = r["state"] or {}
+    except Exception:
+        pass
+
+
+def _episode_save(engine, rid, ep):
+    try:
+        with _conn(engine) as cx:
+            cx.execute(
+                "insert into lcm_trajectory_states(state_key, session_id,"
+                " state, updated_at) values (%s, %s, %s::jsonb, now())"
+                " on conflict (state_key) do update set state = excluded.state,"
+                " updated_at = now()",
+                (f"retrieve_episode:{rid}", ep.get("session_id", ""),
+                 json.dumps(ep, default=str)))
+    except Exception:
+        pass
+
+
+def _episode_drop(engine, rid):
+    _RETRIEVE_EPISODES.pop(rid, None)
+    try:
+        with _conn(engine) as cx:
+            cx.execute("delete from lcm_trajectory_states where state_key = %s",
+                       (f"retrieve_episode:{rid}",))
+    except Exception:
+        pass
+
+
 def lcm_retrieve(args, *, engine=None, **kw):
     e = _eng(args, kw if kw else {"engine": engine})
     action = args.get("action")
-    import uuid
+    _episode_store(e)
     if action == "start":
+        import uuid
         rid = uuid.uuid4().hex[:12]
-        _RETRIEVE_EPISODES[rid] = {"searches": 0, "requirements":
-                                   [r.get("slot_id") for r in
-                                    (args.get("requirements") or [])]}
+        ep = {"searches": 0, "requirements":
+              [r.get("slot_id") for r in (args.get("requirements") or [])],
+              "session_id": _session(e, args) or ""}
+        _RETRIEVE_EPISODES[rid] = ep
+        _episode_save(e, rid, ep)
         return _out({"status": "started", "retrieval_id": rid,
                      "max_searches": 3}, "lcm_retrieve")
     if action == "search":
@@ -393,13 +446,16 @@ def lcm_retrieve(args, *, engine=None, **kw):
                          "reason": "episode closed or search budget used"},
                         "lcm_retrieve")
         ep["searches"] += 1
+        _episode_save(e, rid, ep)
         return _out({"status": "dispatch", "tool": args.get("tool"),
                      "args": args.get("tool_args")}, "lcm_retrieve")
     if action == "finish":
-        ep = _RETRIEVE_EPISODES.pop(args.get("retrieval_id") or "", None)
-        return _out({"status": "finished" if ep else "rejected"}, "lcm_retrieve")
+        ep = _RETRIEVE_EPISODES.pop(rid := (args.get("retrieval_id") or ""), None)
+        _episode_drop(e, rid)
+        return _out({"status": "finished" if ep else "rejected"},
+                    "lcm_retrieve")
     if action == "abandon":
-        _RETRIEVE_EPISODES.pop(args.get("retrieval_id") or "", None)
+        _episode_drop(e, args.get("retrieval_id") or "")
         return _out({"status": "abandoned"}, "lcm_retrieve")
     return _out({"status": "status", "episodes": list(_RETRIEVE_EPISODES)},
                 "lcm_retrieve")

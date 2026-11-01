@@ -68,9 +68,11 @@ def test_forced_failure_no_sqlite_fallback():
         "except Exception as e:",
         "    print('clean-fail', type(e).__name__)",
     ]
-    child = "\0".join(_lines).format(plugin=str(PLUGIN))
+    # NUL separators are NOT allowed in execv argv (ValueError: embedded
+    # null byte), so the child program goes through stdin instead.
+    child = "\n".join(_lines).format(plugin=str(PLUGIN))
     out2 = subprocess.run(
-        [sys.executable, "-c", child], capture_output=True, text=True,
+        [sys.executable, "-"], input=child, capture_output=True, text=True,
         timeout=60, env={**os.environ,
                         "LCM2_PG_DSN": "postgresql:///lcm2db?host=/nope&port=1&user=x"})
     assert "AssertionError" not in out2.stderr, out2.stderr[-1500:]

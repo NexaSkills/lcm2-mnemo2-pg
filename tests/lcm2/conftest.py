@@ -48,6 +48,43 @@ def dsn():
 
 
 @pytest.fixture
+def registered(dsn, schema):
+    """Registered plugin surface (fresh FakeCtx + engine in a throwaway schema).
+    Shared by test_r4_tools_surface and test_r4_full_surface."""
+    import importlib
+    import os
+    os.environ["LCM2_DISABLE_MODEL"] = "1"  # deterministic extractive summaries
+    import engine as E
+    eng = E.LCM2Engine(dsn=dsn, schema=schema)
+    entry = importlib.import_module("plugin_entry")
+
+    class FakeCtx:
+        def __init__(self):
+            self.tools, self.hooks, self.commands = {}, {}, {}
+            self.context_engine = None
+            self.skill = None
+
+        def register_tool(self, name=None, handler=None, schema=None, **kw):
+            self.tools[name] = handler
+
+        def register_hook(self, name, handler):
+            self.hooks[name] = handler
+
+        def register_command(self, name=None, handler=None, **kw):
+            self.commands[name] = handler
+
+        def register_context_engine(self, engine):
+            self.context_engine = engine
+
+        def register_skill(self, name, root=None, **kw):
+            self.skill = name
+
+    ctx = FakeCtx()
+    entry.register(ctx, engine_factory=lambda: eng)
+    return ctx, eng
+
+
+@pytest.fixture
 def schema(dsn, request):
     """Fresh throwaway schema per test (engine bootstraps into it), dropped
     afterwards. Pools are closed AFTER drop so cached connections pinned to

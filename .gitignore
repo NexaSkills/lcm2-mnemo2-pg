@@ -1,3 +1,7 @@
 /pg/
 __pycache__/
 *.pyc
+# stray diagnostic helper files dropped into test dirs during debugging
+# (never intended for git; lint noise; gitignored instead of committed)
+diag_*.py
+

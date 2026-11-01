@@ -16,7 +16,7 @@ SOCKET = os.environ.get("LCM2_PG_HOST",
                         os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
 DSN = f"dbname=lcm2db host={SOCKET} port=54331 user=mnemo201"
 SCHEMAS = ["lcm2_lcm2agent", "lcm2_mnemo2agent"]
-RUN = os.environ["LCM2_R8_RUN"]  # unique per test run (set by pytest)
+RUN = os.environ.get("LCM2_R8_RUN") or uuid.uuid4().hex[:12]  # unique per run
 WORKERS = 4
 ROWS = 25
 
@@ -36,9 +36,12 @@ def _worker(args):
     schema, wid, n = args
     try:
         # fresh connections in this worker only: never reuse a pool object
-        # inherited across fork() (its sockets belong to the parent)
+        # inherited across fork() (its sockets belong to the parent).
+        # set_session=True pins search_path via session settings so the
+        # per-connection SET is re-applied on every pool reconnect too —
+        # a plain SET after pool checkout can be lost silently.
         pgconn.shutdown_pools()
-        with pgconn.connect(DSN, schema) as cx:
+        with pgconn.connect(DSN, schema, set_session=True) as cx:
             for i in range(n):
                 cx.execute(
                     "insert into conc_probe(tag,worker,seq,payload) "

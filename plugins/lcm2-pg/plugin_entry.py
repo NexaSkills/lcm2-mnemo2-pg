@@ -48,7 +48,7 @@ def register(ctx, engine_factory=None):
                     toolset="context_engine",
                     schema={"name": name, "description": f"lcm2-pg {name}",
                             "parameters": {"type": "object", "properties": {}}},
-                    handler=_wrap(fn),
+                    handler=_wrap(fn, get_engine),
                     description=f"lcm2-pg native {name}",
                 )
             except Exception as exc:
@@ -85,9 +85,13 @@ def register(ctx, engine_factory=None):
             pass
 
 
-def _wrap(fn):
+def _wrap(fn, get_engine):
     def handler(args, **kwargs):
-        kwargs.setdefault("engine", None)
+        if not kwargs.get("engine"):
+            # the host calls handlers with args only; the engine always
+            # comes from the register()-bound factory (never a fresh,
+            # differently-scoped LCM2Engine)
+            kwargs["engine"] = get_engine()
         try:
             return fn(args or {}, **kwargs)
         except Exception as exc:  # well-formed JSON error, never a crash

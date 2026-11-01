@@ -54,7 +54,8 @@ def test_compression_creates_summary_nodes(engine, schema):
 def test_expand_recovers_leaf_content_from_summary(engine, schema):
     sid = "s-expand"
     _ingest(engine, sid)
-    engine.maybe_compress(sid)
+    stats = engine.maybe_compress(sid)
+    assert stats.get("compressed"), stats
     with pgconn.connect(pgconn.default_dsn(), schema) as cx:
         node = cx.query(
             "select node_id from summary_nodes where session_id=%s "
@@ -67,7 +68,13 @@ def test_expand_recovers_leaf_content_from_summary(engine, schema):
 def test_grep_finds_compressed_content(engine, schema):
     sid = "s-grep"
     _ingest(engine, sid, 12)
-    engine.maybe_compress(sid)
-    out = json.loads(engine.tools_lcm_grep({"query": "lorem", "session_scope": "current"}))
+    stats = engine.maybe_compress(sid)
+    assert stats.get("compressed"), ("compression did not trigger for 12 "
+                                     "long messages", stats)
+    # "current" scope resolves via HERMES_SESSION_ID / args.session_id; set
+    # the session env exactly as the Hermes host does at runtime.
+    import unittest.mock as _m
+    with _m.patch.dict(os.environ, {"HERMES_SESSION_ID": sid}):
+        out = json.loads(engine.tools_lcm_grep({"query": "lorem", "session_scope": "current"}))
     hits = out.get("results") or out.get("hits") or []
     assert hits, out
