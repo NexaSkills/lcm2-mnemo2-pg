@@ -87,14 +87,47 @@ def register(ctx, engine_factory=None):
     for n in _PKG_MODULES:  # evict foreign bare holders for OUR dir's names
         if n in _sys.modules and not _is_ours(n):
             _sys.modules.pop(n, None)
+    _stop = threading.Event()
+
+    def _revert_once():
+        # The restore in the finally-block below is not atomic against
+        # OTHER threads: while _HERE is on sys.path (or during the
+        # clear()/update() swap), a concurrent host import (CLI boot, bg
+        # skills-sync) can resolve a bare name like `tools` to OUR file
+        # and cache that module. Undo our residue whenever the interpreter
+        # gives us the GIL, for a short window after register() returns,
+        # so such a race self-heals before the host's next bare import.
+        removed = False
+        try:
+            while not _stop.wait(0.002):
+                if not removed:
+                    try:
+                        _sys.path.remove(_HERE)
+                        removed = True
+                    except ValueError:
+                        removed = True
+                for n in _PKG_MODULES:
+                    if n in _sys.modules and _is_ours(n) and \
+                            saved_mods.get(n) is not _sys.modules[n]:
+                        if n in saved_mods:
+                            _sys.modules[n] = saved_mods[n]
+                        else:
+                            del _sys.modules[n]
+        except Exception:
+            pass
+
     try:
         from _selfimport import anchor
         pe = anchor("plugin_entry")
         return pe.register(ctx, engine_factory=engine_factory)
     finally:
+        _stop.set()
         _sys.path[:] = saved_path
         _sys.modules.clear()
         _sys.modules.update(saved_mods)  # byte-exact: host's view restored
+        threading.Thread(target=_revert_once, daemon=True,
+                         name="lcm2-pg:restore-watch").start()
+        _stop2 = threading.Timer(10.0, lambda: None)  # keep name alive; exits with proc
 
 
 __version__ = "0.2.0"

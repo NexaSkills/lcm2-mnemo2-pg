@@ -191,6 +191,13 @@ class Conn:
         'ddl' is a collision-prone top-level name: another suite on the
         same interpreter (mnemo-pg2 tests) can leave a different ddl module
         in sys.modules, and a plain `import ddl` would silently use it.
+
+        Registered under a NAMESPACED name only (never bare 'ddl'): this
+        runs inside plugin register() while OTHER threads (the host CLI)
+        import concurrently — a bare-name publish would race the host's
+        own imports of these names and can strand them as our flat
+        modules ('tools' is not a package boot crash). tools.py reaches
+        SCHEMA_VERSION via _selfimport.anchor('ddl'), not a bare import.
         """
         import importlib.util
         import pathlib
@@ -199,10 +206,19 @@ class Conn:
         if mod is not None and getattr(mod, "__file__", None) and \
                 pathlib.Path(mod.__file__).resolve() == path:
             return mod
-        spec = importlib.util.spec_from_file_location("ddl", path)
+        full = "_lcm2_pg_ddl"
+        mod = sys.modules.get(full)
+        if mod is not None and getattr(mod, "__file__", None) and \
+                pathlib.Path(mod.__file__).resolve() == path:
+            return mod
+        spec = importlib.util.spec_from_file_location(full, path)
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        sys.modules["ddl"] = mod  # keep the conventional name for tools.py
+        sys.modules[full] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop(full, None)
+            raise
         return mod
 
     def bootstrap(self) -> None:

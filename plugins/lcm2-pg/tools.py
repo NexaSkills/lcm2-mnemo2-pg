@@ -508,7 +508,11 @@ def lcm_doctor(args, *, engine=None, **kw):
             issues.append(f"{orphans[0][0]} summary_nodes with missing source messages")
         sv = cx.query_scalar(
             "select schema_version from lcm_migration_state")
-        from ddl import SCHEMA_VERSION
+        try:  # file-anchored: never bind a foreign/host bare 'ddl' module
+            from _selfimport import anchor
+            SCHEMA_VERSION = anchor("ddl").SCHEMA_VERSION
+        except Exception:
+            from ddl import SCHEMA_VERSION  # noqa: E402
         if sv != int(SCHEMA_VERSION):
             issues.append(f"migration schema_version={sv} (expected {SCHEMA_VERSION})")
         try:
