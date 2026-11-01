@@ -37,6 +37,27 @@ def _release_all():
         return _pkg._selfimport_module().release_all
 
 
+def _pkg_init():
+    """OUR package __init__ module object, resolved via __spec__ (never
+    `import __init__` — the bare name resolves the HOST's module of that
+    name, and sys.modules keys get purged after register())."""
+    import importlib.util as _ilu
+    import os as _os
+    init = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                         "__init__.py")
+    m = getattr(__spec__, "parent", None)
+    mod = __import__("sys").modules.get(m) if m else None
+    if mod is not None and getattr(mod, "_lcm2_pkg_marker", None) == init:
+        return mod
+    spec = _ilu.spec_from_file_location(
+        "_lcm2_pg_pkg", init, submodule_search_locations=[_os.path.dirname(init)])
+    mod = _ilu.module_from_spec(spec)
+    __import__("sys").modules["_lcm2_pg_pkg"] = mod
+    spec.loader.exec_module(mod)
+    mod._lcm2_pkg_marker = init
+    return mod
+
+
 def register(ctx, engine_factory=None):
     """Plugin entry: context engine + 15 tools + hooks + /lcm command."""
     from _selfimport import anchor
