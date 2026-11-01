@@ -204,14 +204,23 @@ _ACTIVE = [0]  # >0 while OUR frames are importing
 
 
 def _engaged():
+    # ONLY frames from OUR OWN directory count: the engine's runtime
+    # frames live in plugins/lcm2-pg/, not in this context_engine dir.
+    # Matching host roots here would keep the finder active forever and
+    # hijack the host's own `tools`/`engine` packages.
+    our_dir = _os.path.dirname(_os.path.realpath(_impl_file()))
     f = sys._getframe(1)
     while f is not None:
         fn = getattr(f, "f_globals", {}).get("__file__", "")
         if isinstance(fn, str) and _os.path.dirname(
-                _os.path.realpath(fn)) == _HERE:
+                _os.path.realpath(fn)) == our_dir:
             return True
         f = f.f_back
     return False
+
+
+def _impl_file():
+    return _os.path.join(_HERE, "engine.py")
 
 
 class _Lcm2FileFinder:
