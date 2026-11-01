@@ -44,4 +44,6 @@ Phase 1 ships inert skeletons (discovery-valid `plugin.yaml`, no tools/hooks).
 ## Scripts
 
 - `scripts/setup_instance.sh` — idempotent: initdb + unit + dbs + schemas.
+- `scripts/ensure_instance.sh` — 2-min systemd-timer watchdog that self-heals
+  role/hba/dbs/schemas if any rogue process breaks them (log: ~/.hermes/logs/lcm2-mnemo2-ensure.log).
 - `scripts/onboard_profile.sh <agent>` — idempotent: profile, schemas, .env params, config via CLI, symlinks, verify.
