@@ -106,3 +106,31 @@ def release(name: str, publish: bool = False) -> None:
         sys.modules.setdefault(n, foreign)
     if mod is not None:
         mod.__dict__.pop("_lcm2_evicted", None)
+
+
+def release_all() -> None:
+    """Undo anchor()'s bare/package publication for EVERY name this
+    interpreter ever anchor()'d (`_ANCHORED`, not the current dict, so
+    names already cleaned by an inner release() are still visited). The
+    plugin's own module bodies anchor bare siblings at exec time
+    (`command.py` anchors `tools` on import), so relying on one call site
+    to tidy up is not enough: a leaked bare `tools` breaks the HOST's
+    `import tools.<submodule>` for the whole session ('tools' is not a
+    package). No-op-safe: release() only deletes a binding that is still
+    OUR module and only reinstates what anchor() itself evicted.
+    """
+    for n in sorted(_ANCHORED):
+        try:
+            release(n)
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+    # Belt for names published during exec by a route that never reaches
+    # release() (e.g. a plain `import tools` inside our module bodies
+    # while _HERE is on sys.path): purge any binding that still points at
+    # OUR file, whatever key it hides under. Foreign keys are untouched.
+    for k, v in list(sys.modules.items()):
+        try:
+            if _mine(v):
+                del sys.modules[k]
+        except Exception:  # pragma: no cover
+            pass

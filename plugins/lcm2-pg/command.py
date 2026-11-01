@@ -4,19 +4,30 @@ from __future__ import annotations
 import json
 
 from _selfimport import anchor as _anchor  # file-anchored: never the host's
-T = _anchor("tools")                    # `tools` package if one pre-binds it
+# Resolved lazily in handle(): anchoring 'tools' at module IMPORT time
+# publishes a bare name (under the plugin's package that is harmless, but
+# the host module-namespace loader may exec this file with a package name
+# that makes anchor() publish BARE 'tools' — stranding the host's real
+# `import tools.<sub>` for the whole session: 'tools' is not a package).
+_T = []
+
+
+def _tools():
+    if not _T:
+        _T.append(_anchor("tools"))
+    return _T[0]
 
 
 def handle(raw: str, engine) -> str:
     parts = (raw or "").strip().split(None, 1)
     sub, rest = (parts + ["", ""])[:2]
     if sub in ("", "status"):
-        return T.lcm_status({}, engine=engine)
+        return _tools().lcm_status({}, engine=engine)
     if sub == "inspect":
-        return T.lcm_inspect({}, engine=engine)
+        return _tools().lcm_inspect({}, engine=engine)
     if sub == "doctor":
-        return T.lcm_doctor({}, engine=engine)
+        return _tools().lcm_doctor({}, engine=engine)
     if sub == "grep":
-        return T.lcm_grep({"query": rest}, engine=engine)
+        return _tools().lcm_grep({"query": rest}, engine=engine)
     return json.dumps({"usage": "/lcm [status|inspect|doctor|grep <q>]",
                        "implementation": "lcm2-pg/native"})

@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util as _ilu
 import os as _os
 import sys as _sys
+import threading
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _PKG_MODULES = ("plugin_entry", "tools", "hooks", "schemas", "engine",
@@ -87,47 +88,29 @@ def register(ctx, engine_factory=None):
     for n in _PKG_MODULES:  # evict foreign bare holders for OUR dir's names
         if n in _sys.modules and not _is_ours(n):
             _sys.modules.pop(n, None)
-    _stop = threading.Event()
-
-    def _revert_once():
-        # The restore in the finally-block below is not atomic against
-        # OTHER threads: while _HERE is on sys.path (or during the
-        # clear()/update() swap), a concurrent host import (CLI boot, bg
-        # skills-sync) can resolve a bare name like `tools` to OUR file
-        # and cache that module. Undo our residue whenever the interpreter
-        # gives us the GIL, for a short window after register() returns,
-        # so such a race self-heals before the host's next bare import.
-        removed = False
-        try:
-            while not _stop.wait(0.002):
-                if not removed:
-                    try:
-                        _sys.path.remove(_HERE)
-                        removed = True
-                    except ValueError:
-                        removed = True
-                for n in _PKG_MODULES:
-                    if n in _sys.modules and _is_ours(n) and \
-                            saved_mods.get(n) is not _sys.modules[n]:
-                        if n in saved_mods:
-                            _sys.modules[n] = saved_mods[n]
-                        else:
-                            del _sys.modules[n]
-        except Exception:
-            pass
-
     try:
         from _selfimport import anchor
         pe = anchor("plugin_entry")
         return pe.register(ctx, engine_factory=engine_factory)
     finally:
-        _stop.set()
         _sys.path[:] = saved_path
+        # The clear/update pair below only reinstates PRE-EXISTING
+        # bindings. Any key our exec CREATED (bare `tools` published by
+        # command.py's exec-time anchor, pgconn/ddl/schemas,
+        # _lcm2_impl_*, _lcm2_pg_*, the bridge) would otherwise SURVIVE
+        # the restore, and the host's next `import tools.<sub>` would
+        # resolve against our flat module -> boot crash "'tools' is not a
+        # package". Diff the key SET and purge everything we created.
+        for k in set(_sys.modules) - set(saved_mods):
+            try:
+                ours = _is_ours(k) or k.startswith(("_lcm2_impl_",
+                                                    "_lcm2_pg", "lcm2_pg"))
+            except Exception:
+                ours = True  # unclassifiable: assume ours (safest for host)
+            if ours:
+                _sys.modules.pop(k, None)
         _sys.modules.clear()
         _sys.modules.update(saved_mods)  # byte-exact: host's view restored
-        threading.Thread(target=_revert_once, daemon=True,
-                         name="lcm2-pg:restore-watch").start()
-        _stop2 = threading.Timer(10.0, lambda: None)  # keep name alive; exits with proc
 
 
 __version__ = "0.2.0"
