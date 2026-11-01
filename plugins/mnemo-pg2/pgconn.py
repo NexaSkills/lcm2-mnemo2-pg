@@ -134,10 +134,21 @@ class Conn:
 
     def __enter__(self) -> "Conn":
         self._cx = self._pool.getconn()
+        self._schema_on_conn = self.schema
+        # OUR schema is bound session-locally ONLY (never SET ... LOCAL):
+        # it is RESET in __exit__ before the connection returns to the
+        # pool, so a shared-surface call can never read or write through
+        # a stale private search_path (the public.shared_* views would
+        # shadow the real shared schema). Fail-closed, not shadow-able.
         try:
-            # SET rejects bind params; name validated in __init__ (%s on
-            # identifiers only, never user data).
-            self._cx.execute("SET search_path TO %s, public" % self.schema)
+            # SET rejects bind params; names validated in __init__ (%s on
+            # identifiers only, never user data). Surface (shared-bank)
+            # connections get an EMPTY public: cross-agent views are baked
+            # fully-qualified into the shared schema itself (a
+            # private-owned public.shared_* view must never shadow the
+            # real shared tables — R5 fail-closed, not search-order).
+            tail = "" if self.kind == "shared" else ", public"
+            self._cx.execute("SET search_path TO %s%s" % (self.schema, tail))
             if not self._cx.autocommit:
                 self._cx.commit()
         except Exception:
@@ -217,6 +228,18 @@ class Conn:
             self._cx.rollback()
         for stmt in mod.statements(self.kind):
             self._cx.execute(stmt)
+        if self.kind == "shared":
+            # Cross-agent views INSIDE the shared schema, fully qualified
+            # (self-pointing). Surface connections run with public pruned
+            # from search_path (pgconn __enter__), so a private agent that
+            # planted public.shared_* can never shadow these — R5
+            # fail-closed by topology, not by search order.
+            try:
+                for stmt in mod.shared_view_statements(self.schema):
+                    self._cx.execute(stmt)
+                self._cx.commit()
+            except Exception:
+                self._cx.rollback()
         self._cx.commit()
 
     def bootstrap(self) -> None:

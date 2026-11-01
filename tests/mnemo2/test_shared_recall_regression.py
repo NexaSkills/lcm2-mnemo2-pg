@@ -1,19 +1,16 @@
 """Surface-bank recall on shared views must qualify temporal columns (R5)."""
 import os
-import sys
+import pathlib
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir,
-                                "plugins", "mnemo-pg2"))
-
-import engine as engmod  # noqa: E402
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+ENGINE = ROOT / "plugins" / "mnemo-pg2" / "engine.py"
 
 
 def test_temporal_expr_qualifies_created_at():
-    src = open(os.path.join(os.path.dirname(__file__), os.pardir,
-                            "plugins", "mnemo-pg2", "engine.py"),
-                encoding="utf-8").read()
+    src = ENGINE.read_text(encoding="utf-8")
     assert "GREATEST(" in src
     # the temporal expression must not reference a bare `created_at`
+    # (shared_memory VIEW joins would make it ambiguous)
     for frag in src.split("GREATEST(")[1:]:
         inner = frag.split(")", 1)[0]
         assert " - created_at" not in inner, "bare created_at in temporal expr"

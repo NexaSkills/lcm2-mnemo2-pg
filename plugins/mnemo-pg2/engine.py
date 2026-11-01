@@ -485,21 +485,29 @@ class Engine:
         return {"ok": n is not None, "retired": n}
 
     # -- shared surface (THE cross-agent schema, R5) -------------------------
+    def _surface_schema(self) -> str:
+        return (self.shared_schema or pgconn.shared_schema()).strip()
+
     def shared_remember(self, content, *, kind="meta", importance=0.8,
                         veracity="unknown", metadata=None) -> dict:
         if not content or not content.strip():
             return {"ok": False, "error": "empty content"}
         mid = new_id("sf")
         vec = _embed.embed_text(content)
+        sh = self._surface_schema()
         with self._cx("surface") as cx:
+            # fully-qualified: this write MUST land in the ONE shared
+            # schema even when the caller's search_path resolves the
+            # unqualified name to a private table instead.
             cx.execute(
-                "INSERT INTO working_memory(id,content,importance,source,"
-                "scope,veracity,metadata) VALUES (%s,%s,%s,%s,'global',%s,%s::jsonb)",
+                f'INSERT INTO "{sh}".working_memory(id,content,importance,'
+                "source,scope,veracity,metadata) "
+                "VALUES (%s,%s,%s,%s,'global',%s,%s::jsonb)",
                 (mid, content, importance, f"surface:{kind}", veracity,
                  json.dumps({**(metadata or {}), "kind": kind})))
             cx.execute(
-                "INSERT INTO memory_embeddings(memory_id,kind,embedding) "
-                "VALUES (%s,'working',%s::vector)",
+                f'INSERT INTO "{sh}".memory_embeddings(memory_id,kind,'
+                "embedding) VALUES (%s,'working',%s::vector)",
                 (mid, _embed.to_pg_vector(vec)))
         return {"ok": True, "id": mid, "bank": "surface", "kind": kind}
 
@@ -544,6 +552,7 @@ class Engine:
                     # op-shaped failure (not an exception) — same contract:
                     # a failing op fails the batch, never a partial apply.
                     cx.execute("ROLLBACK")
+                    results.append({"index": i, "action": action, **r})
                     return {"ok": False, "rolled_back": True,
                             "failed_index": i,
                             "error": r.get("error", "op failed"),
