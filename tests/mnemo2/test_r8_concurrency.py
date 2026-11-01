@@ -3,8 +3,14 @@
 Threads hammer remember/shared_remember/batch concurrently; afterwards no
 writes are lost (every row is present), and a batch either fully applies
 or fully rolls back under contention (single PG transaction).
+
+Each writer thread registers its OWN plugin ctx pointing at its OWN
+private schema via the thread's env — env is global in-process, so the
+threads pin MNEMO2_SCHEMA around their whole run (writer-local schemas,
+no cross-thread env races on a shared handler set).
 """
 import json
+import os
 import threading
 import uuid
 
@@ -28,8 +34,14 @@ def _mk(dsn, b, sh, request):
     request.addfinalizer(_drop)
 
 
-def _writer(ctx, agent, results, errors):
+def _writer(dsn, priv, agent, errors):
+    """One writer: pins MNEMO2_SCHEMA to its schema for its whole run,
+    registers its own ctx, writes N rows. The engine resolves schema
+    per-call from env, so the pin must span the write loop."""
+    prev = os.environ.get("MNEMO2_SCHEMA")
+    os.environ["MNEMO2_SCHEMA"] = priv
     try:
+        ctx = register_plugin(dsn, priv=priv)[1]
         for i in range(N):
             tag = f"conc-{agent}-{i}"
             r = ctx.tools["mnemosyne_remember"]["handler"](
@@ -39,6 +51,11 @@ def _writer(ctx, agent, results, errors):
                 errors.append(f"{agent}#{i}: {r}")
     except Exception as e:  # noqa: BLE001
         errors.append(f"{agent} thread died: {e!r}")
+    finally:
+        if prev is None:
+            os.environ.pop("MNEMO2_SCHEMA", None)
+        else:
+            os.environ["MNEMO2_SCHEMA"] = prev
 
 
 def test_parallel_writers_no_lost_writes(dsn, priv_schema, request):
@@ -47,11 +64,10 @@ def test_parallel_writers_no_lost_writes(dsn, priv_schema, request):
     sh = "shared_test_" + uuid.uuid4().hex[:10]
     _mk(dsn, b, sh, request)
 
-    ctx_a = register_plugin(dsn, priv=priv_schema, shared=sh)[1]
-    ctx_b = register_plugin(dsn, priv=b, shared=sh)[1]
     errors: list[str] = []
-    threads = [threading.Thread(target=_writer, args=(ctx_a, "a", None, errors)),
-               threading.Thread(target=_writer, args=(ctx_b, "b", None, errors))]
+    threads = [threading.Thread(target=_writer,
+                                args=(dsn, priv_schema, "a", errors)),
+               threading.Thread(target=_writer, args=(dsn, b, "b", errors))]
     for t in threads:
         t.start()
     for t in threads:
@@ -72,12 +88,15 @@ def test_concurrent_shared_surface(dsn, priv_schema, request):
     b = "mnemo2_test_" + uuid.uuid4().hex[:10]
     sh = "shared_test_" + uuid.uuid4().hex[:10]
     _mk(dsn, b, sh, request)
-    ctx_a = register_plugin(dsn, priv=priv_schema, shared=sh)[1]
-    ctx_b = register_plugin(dsn, priv=b, shared=sh)[1]
     errors: list[str] = []
 
-    def sh_write(ctx, tag):
+    def sh_write(priv, tag):
+        # own ctx + shared-schema pin spanning the loop (env is global;
+        # the pin must cover EVERY write, not just registration)
+        prev = os.environ.get("MNEMO2_SHARED_SCHEMA")
+        os.environ["MNEMO2_SHARED_SCHEMA"] = sh
         try:
+            ctx = register_plugin(dsn, priv=priv, shared=sh)[1]
             for i in range(N):
                 r = ctx.tools["mnemosyne_shared_remember"]["handler"](
                     {"content": f"shared conc-{tag}-{i}"})
@@ -85,9 +104,14 @@ def test_concurrent_shared_surface(dsn, priv_schema, request):
                     errors.append(f"{tag}#{i}: {r}")
         except Exception as e:  # noqa: BLE001
             errors.append(f"{tag} died: {e!r}")
+        finally:
+            if prev is None:
+                os.environ.pop("MNEMO2_SHARED_SCHEMA", None)
+            else:
+                os.environ["MNEMO2_SHARED_SCHEMA"] = prev
 
-    threads = [threading.Thread(target=sh_write, args=(ctx_a, "a")),
-               threading.Thread(target=sh_write, args=(ctx_b, "b"))]
+    threads = [threading.Thread(target=sh_write, args=(priv_schema, "a")),
+               threading.Thread(target=sh_write, args=(b, "b"))]
     for t in threads:
         t.start()
     for t in threads:
