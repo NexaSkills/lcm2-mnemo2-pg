@@ -233,17 +233,14 @@ class Conn:
             from _selfimport import anchor  # noqa: plugin-local import
             mod = anchor("ddl")
         # pgvector must exist in THIS database before any VECTOR-typed DDL.
-        # Serialize on the SAME advisory-lock key class as the table
-        # CREATEs: CREATE EXTENSION races with concurrent CREATE TABLE on
-        # pg_depend (FeatureNotSupported: cannot alter a subobject of the
-        # extension). In one transaction with the lock (xact lock, not
-        # commit — committing the lock would release it early).
+        # CRITICAL: commit BEFORE the table CREATEs and never hold a lock
+        # across both — a CREATE EXTENSION staying open in the same
+        # transaction as CREATE TABLE trips pg_depend races ("cannot alter
+        # a subobject of an extension", and CREATE TABLE IF NOT EXISTS
+        # surfacing pg_type_typname_nsp_index as UniqueViolation instead
+        # of its own IF-NOT-EXISTS skip). Committed extension first, the
+        # table race below is serialized per-schema by __enter__'s lock.
         try:
-            self._cx.execute(
-                "SELECT pg_advisory_xact_lock("
-                "hashtext(%s)::bigint, "
-                "(SELECT COALESCE(max(classid),0) FROM pg_class)::bigint)",
-                (f"{self.dsn}\x1f{self.schema}",))
             self._cx.execute("CREATE EXTENSION IF NOT EXISTS vector")
             self._cx.commit()
         except Exception:
