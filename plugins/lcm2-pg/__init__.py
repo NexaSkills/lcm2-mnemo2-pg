@@ -89,7 +89,16 @@ class _SelfImportFinder(_ilabc.MetaPathFinder):
 def _origin_is_ours():
     """True if any frame on the CURRENT import stack belongs to a module
     whose file lives in OUR plugin dir (the _selfimport._SibFinder
-    predicate, mirrored so late anchor()-less windows gate identically)."""
+    predicate, mirrored so late anchor()-less windows gate identically).
+
+    F-1 (P2CLOSE): importlib bootstrap frames are SKIPPED. `_bootstrap` /
+    `_bootstrap_external` report __file__ inside the interpreter's own lib
+    dir — which IS our dir under a symlinked plugin layout — so an ordinary
+    host import chain (MainThread `import hermes_cli.models`) walking
+    meta_path showed a "frame from our dir" and was served our flat file:
+    the residual boot race. Only frames from real module FILES under a
+    different interpreter lib count.
+    """
     try:
         here = _os.path.realpath(_HERE)
     except Exception:
@@ -99,6 +108,12 @@ def _origin_is_ours():
     except Exception:
         return False
     while fr is not None:
+        fname = getattr(fr, "f_code", None)
+        fname = getattr(fname, "co_filename", "") if fname else ""
+        base = _os.path.basename(str(fname))
+        if base.startswith(("_bootstrap", "_frozen_importlib")):
+            fr = fr.f_back
+            continue
         fn = getattr(fr, "f_globals", {}).get("__file__", "")
         if isinstance(fn, str) and fn:
             try:

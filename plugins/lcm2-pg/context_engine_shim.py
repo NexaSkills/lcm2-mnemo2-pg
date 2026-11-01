@@ -214,9 +214,17 @@ def _engaged():
     # frames live in plugins/lcm2-pg/, not in this context_engine dir.
     # Matching host roots here would keep the finder active forever and
     # hijack the host's own `tools`/`engine` packages.
+    # F-1 (P2CLOSE): importlib bootstrap frames are skipped — their
+    # __file__ points into the interpreter's lib dir, not at our modules,
+    # and must never make a host-origin import look "ours".
     our_dir = _os.path.dirname(_os.path.realpath(_impl_file()))
     f = sys._getframe(1)
     while f is not None:
+        _fname = str(getattr(getattr(f, "f_code", None), "co_filename", ""))
+        if _fname.startswith("<frozen ") or _fname.split("/")[-1].startswith(
+                ("_bootstrap", "_frozen_importlib")):
+            f = f.f_back
+            continue
         fn = getattr(f, "f_globals", {}).get("__file__", "")
         if isinstance(fn, str) and _os.path.dirname(
                 _os.path.realpath(fn)) == our_dir:

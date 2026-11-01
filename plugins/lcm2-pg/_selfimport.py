@@ -62,7 +62,16 @@ class _SibFinder:
 
 def _origin_is_ours():
     """True if any frame on the current import stack belongs to a module
-    whose file is in OUR plugin dir (i.e. WE triggered this import)."""
+    whose file is in OUR plugin dir (i.e. WE triggered this import).
+
+    F-1 (P2CLOSE): importlib bootstrap frames are SKIPPED — `_bootstrap` /
+    `_bootstrap_external` report __file__ inside the interpreter's own lib
+    dir, which under a symlinked plugin layout can EQUAL the dir these
+    helpers realpath() (the profile dir resolves through to repo files, but
+    the frames themselves belong to the import machinery, not to us). An
+    ordinary host import chain walking meta_path then looked "ours" and was
+    served our flat file — the residual boot race.
+    """
     try:
         here = os.path.realpath(_HERE)
     except Exception:
@@ -72,6 +81,11 @@ def _origin_is_ours():
     except Exception:
         return False
     while fr is not None:
+        fname = getattr(getattr(fr, "f_code", None), "co_filename", "")
+        if str(fname).startswith(("<frozen ",)) or str(fname).split("/")[-1].startswith(
+                ("_bootstrap", "_frozen_importlib")):
+            fr = fr.f_back
+            continue
         fn = getattr(fr, "f_globals", {}).get("__file__", "")
         if isinstance(fn, str) and fn:
             try:
@@ -91,6 +105,26 @@ def _mine(mod) -> bool:
     f = getattr(mod, "__file__", None)
     return isinstance(f, str) and os.path.dirname(
         os.path.realpath(f)) == os.path.realpath(_HERE)
+
+
+def _host_pkg_owner(name):
+    """File (module) the PROCESS would bind for a fresh bare `import <name>`,
+    via the meta-path finders alone (no sys.path import cache). If that is a
+    PACKAGE (has __path__, e.g. the host's tools/ package), the bare name is
+    host-owned as a namespace: publishing our flat file under it strands
+    `import <name>.<sub>` ('tools' is not a package — the F-1/F-2 boot
+    crash class). anchor() must then serve us WITHOUT publishing."""
+    import importlib.machinery as _im
+    for finder in sys.meta_path:
+        if isinstance(finder, (_SibFinder, _im.FrozenImporter)):
+            continue
+        try:
+            spec = finder.find_spec(name)
+        except Exception:
+            continue
+        if spec is not None:
+            return spec
+    return None
 
 
 def anchor(name: str, filename: str | None = None):
@@ -132,11 +166,26 @@ def anchor(name: str, filename: str | None = None):
                 except ValueError:
                     pass
     # publish under the bare + package names (evicting foreign holders;
-    # they are restored by release() when the importing frame exits)
-    names = [name] + ([f"{_PKG}.{name}"] if _PKG else [])
+    # they are restored by release() when the importing frame exits).
+    # F-1: NEVER publish under a bare name the process resolves to a host
+    # PACKAGE (tools/, engine/, ...): a flat file under that key breaks
+    # the host's concurrent `import tools.<sub>` ('tools' is not a package)
+    # for as long as the publication lives. Our code path is the returned
+    # module object itself; the package-qualified key stays published so
+    # later `import <pkg>.<name>` still resolves into OUR file.
     _ANCHORED.add(name)
     evicted = {}
-    for n in names:
+    publish = [f"{_PKG}.{name}"] if _PKG else [name]
+    if not name.startswith("_"):
+        try:
+            _sp = _host_pkg_owner(name)
+            if _sp is None or _sp.submodule_search_locations is None:
+                publish.append(name)  # flat-name world (standalone): keep bare
+            elif sys.modules.get(name) is not None and _mine(sys.modules[name]):
+                publish.append(name)  # we already own the current binding
+        except Exception:
+            publish.append(name)
+    for n in publish:
         cur = sys.modules.get(n)
         if cur is not None and not _mine(cur):
             evicted[n] = sys.modules.pop(n)
