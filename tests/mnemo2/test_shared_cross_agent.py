@@ -5,6 +5,7 @@ private schemas must see the row through shared_recall; private isolation
 holds both ways. Real PG instance, real rows cited.
 """
 import json
+import os
 import uuid
 
 from conftest import register_plugin
