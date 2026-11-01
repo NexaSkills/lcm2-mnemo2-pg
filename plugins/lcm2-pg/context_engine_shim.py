@@ -255,11 +255,14 @@ class _Lcm2FileFinder:
         return importlib.util.spec_from_file_location(fullname, p)
 
 
-if not any(type(f).__name__ == "_Lcm2FileFinder" and getattr(f, "_names_marker", None) == _HERE
-           for f in sys.meta_path):
-    _finder = _Lcm2FileFinder()
-    _finder._names_marker = _HERE
-    sys.meta_path.insert(0, _finder)
+# F-1 (P2FLIP): we do NOT insert here. A permanent meta-path finder is a
+# permanent hijack surface: importlib walks meta_path for EVERY import in
+# the process (including the host boot's `tools.<sub>` chains running on
+# other threads) and the frame/`_ACTIVE` gates can false-positive (frozen
+# bootstrap frames). The finder is inserted only around OUR own exec
+# windows (_impl_class()/_fsib()/register() each _engage()+_readd_finder()
+# and _remove_finder() on exit) — the window is microseconds instead of
+# the whole session.
 
 
 def _remove_finder() -> None:

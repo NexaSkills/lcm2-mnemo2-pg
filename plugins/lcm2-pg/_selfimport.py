@@ -24,6 +24,36 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PKG = (__package__ or "").split(".")[0]
 _ANCHORED: set = set()  # names ever anchor()'d in this interpreter
+# Exec-window depth, module-global (list cell: shared by EVERY copy of
+# this file in the interpreter — the _lcm2_impl_, package-qualified and
+# namespaced-alias loads must agree on ONE counter). anchor() increments
+# it around every exec_module; __init__._SelfImportFinder._depth_cell()
+# is THE authoritative cell. Locate by sys.modules KEY only — never
+# `import` (any import re-enters the finders and would recurse).
+_DEPTH_KEY = "_lcm2_depth_registry_ours"
+
+
+def _depth_cell():
+    import types as _t
+    c = sys.modules.get(_DEPTH_KEY)
+    if c is None:
+        c = _t.ModuleType(_DEPTH_KEY)
+        setattr(c, "CELL", [0])
+        sys.modules[_DEPTH_KEY] = c
+    return getattr(c, "CELL")
+
+
+_ANCHOR_DEPTH = _depth_cell()
+
+
+def _anchor_here_real():
+    """Realpath of THIS copy's dir — stamped on every _SibFinder anchor()
+    installs, checked in find_spec so an instance belonging to another
+    loader copy's window can never serve files off the shared counter."""
+    try:
+        return os.path.realpath(_HERE)
+    except Exception:  # pragma: no cover
+        return _HERE
 # Bare names the HOST repo root legitimately owns as packages (tools,
 # engine, pgconn, ...). anchor() may publish OUR module under them ONLY
 # while OUR frames are importing (restore evicts them again); leaving
@@ -37,19 +67,28 @@ HOST_BARE = {"tools", "engine", "pgconn", "schemas", "command", "hooks",
 # would bind our flat file (ModuleNotFoundError: 'tools' is not a package,
 # the F1 crash class).
 NEVER_PUBLISH = {"os", "io", "sys", "types", "json", "time", "logging"}
+# Module-global depth of anchor() exec windows (ALL threads). Imports
+# fired from inside our exec_module — worker threads spawned mid-exec,
+# deferred calls, nested anchors — carry no "our" frame once they drift
+# onto stdlib codepaths, so the frame-stack origin gate misses them.
+# This counter covers those: while it is > 0 we serve OUR names; frame
+# stacks are only consulted when it is 0 (late routes, no exec running).
+_ANCHOR_DEPTH = [0]
 
 
 class _SibFinder:
     """Serve OUR bare sibling imports from OUR dir WITHOUT sys.path.
 
-    Installed for the duration of an anchor() exec only. Origin-gated
-    (F1): a MetaPathFinder serves EVERY import in the process, including
-    a HOST thread's `import tools.<sub>` running concurrently with our
-    exec window. Serving that host import our flat tools.py strands it
-    ('tools' is not a package) — exactly the boot crash. So we only
-    answer when the import ORIGINATES inside our plugin dir (a frame
-    from this dir is on the importing stack); any other caller returns
-    None and the normal path finders serve it.
+    Installed for the duration of an anchor() exec only. Gated (F1
+    flip): we serve ONLY while an anchor() exec is running
+    (_ANCHOR_DEPTH > 0, covers every import our exec itself triggers,
+    on any thread) or while the importing stack contains a frame from
+    OUR dir (late anchor()-less calls). importlib walks meta_path
+    identically for a HOST thread's `import tools.<sub>` (parent
+    'tools' resolves through find_spec first), so any weaker gate lets
+    a concurrent host import bind our flat file and strand it ('tools'
+    is not a package) — the boot crash. Any other caller returns None
+    and the normal path finders serve it.
     """
 
     def find_spec(self, fullname, path=None, target=None):
@@ -57,7 +96,15 @@ class _SibFinder:
             return None
         if fullname not in _NAMES:
             return None
-        if not _origin_is_ours():
+        # Counter gate: an anchor() exec window (any thread) authorizes
+        # serving our file — but only if THIS instance is the one anchor()
+        # installed for its window (a stale instance from an older/other
+        # copy's window must not serve our files off a foreign counter).
+        # Frame-stack origin is consulted only when NO window is open.
+        if _ANCHOR_DEPTH[0] > 0:
+            if getattr(self, "_anchor_here", None) != _anchor_here_real():
+                return None
+        elif not _origin_is_ours():
             return None  # host-origin import: never hijack it (F1)
         import importlib.util
         f = os.path.join(_HERE, fullname + ".py")
@@ -158,14 +205,32 @@ def anchor(name: str, filename: str | None = None):
         # siblings through a transient meta-path finder instead (exact
         # names only; global sys.path is never touched).
         finder = _SibFinder()
-        inserted = finder not in sys.meta_path
+        # Second _SibFinder instance already in meta_path for OUR dir (a
+        # second loader copy of this file)? Its find_spec consults THE
+        # shared _ANCHOR_DEPTH cell, so reuse it instead of stacking a
+        # duplicate. An instance anchored to a DIFFERENT dir is never
+        # trusted inside our window (its find_spec checks _anchor_here).
+        here_real = os.path.realpath(_HERE)
+        inserted = True
+        for f in list(sys.meta_path):
+            if type(f).__name__ == "_SibFinder" and \
+                    getattr(f, "_anchor_here", None) == here_real:
+                finder = f
+                inserted = False
+                break
         if inserted:
+            try:
+                finder._anchor_here = here_real
+            except Exception:
+                pass
             sys.meta_path.insert(0, finder)
+        _ANCHOR_DEPTH[0] += 1  # gate: imports from this exec (any thread)
         try:
             mod = importlib.util.module_from_spec(spec)
             sys.modules[full] = mod
             spec.loader.exec_module(mod)
         finally:
+            _ANCHOR_DEPTH[0] -= 1
             if inserted:
                 try:
                     sys.meta_path.remove(finder)
@@ -181,28 +246,36 @@ def anchor(name: str, filename: str | None = None):
     # later `import <pkg>.<name>` still resolves into OUR file.
     _ANCHORED.add(name)
     evicted = {}
-    # F-1 (bindtrace-proven): ANY publication under a bare name another
-    # thread may import is poison. The host caches a poisoned module
-    # object inside its own import lock if `import tools.<sub>` lands
-    # while sys.modules['tools'] is OUR flat file; release_all() after
-    # register cannot un-poison the cached object (boot crash 'tools is
-    # not a package', 16/20 boots @1cd252a). Under the package-qualified
-    # route the bare name never changes hands, so it is always safe here.
+    # F-1 FLIP (P2FLIP): NEVER publish under a bare name the HOST owns as
+    # a package. The old "evict for the exec duration, restore after"
+    # dance is what strands the host: importlib resolves `import
+    # tools.<sub>` through the parent binding in sys.modules regardless
+    # of WHICH thread/frame asked, so any host-thread submodule import
+    # landing inside our exec window sees our flat file as 'tools' and
+    # caches a poisoned module inside the host's own import lock
+    # ('tools' is not a package — the boot crash no frame-origin gate
+    # can fix). Under the flip the bare key NEVER changes hands for a
+    # host-package name: we serve our code via the _lcm2_impl_<name>
+    # key (already published above) + the package-qualified alias.
+    # Bare publish survives ONLY when the process resolves the name to a
+    # non-package (no host package owns it: standalone/test world) or
+    # when _PKG gives us a package-qualified key to hide behind.
+    publish = []
     if _PKG:
-        publish = [f"{_PKG}.{name}"]
-    elif name.startswith("_"):
-        publish = [name]  # underscore-private: no host/stdlib importer
+        publish.append(f"{_PKG}.{name}")
+    if name.startswith("_"):
+        publish.append(name)  # underscore-private: no host/stdlib importer
     else:
         try:
             _sp = _host_pkg_owner(name)
-            publish = [name] if (
-                _sp is None or _sp.submodule_search_locations is None) else []
+            host_pkg = _sp is not None and _sp.submodule_search_locations is not None
         except Exception:
-            publish = []  # undecided owner: package key alone is the safe side
-        if not publish and sys.modules.get(name) is not None and \
-                _mine(sys.modules.get(name)):
-            publish = [name]  # we already own the current binding
-    for n in publish:
+            host_pkg = True  # undecided owner: treat as host-owned (safe side)
+        if not host_pkg:
+            publish.append(name)  # standalone world: the bare name is ours
+        elif sys.modules.get(name) is not None and _mine(sys.modules[name]):
+            publish.append(name)  # we already legitimately own the binding
+    for n in dict.fromkeys(publish):
         cur = sys.modules.get(n)
         if cur is not None and not _mine(cur):
             evicted[n] = sys.modules.pop(n)

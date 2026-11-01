@@ -50,6 +50,30 @@ _PKG_MODULES = ("plugin_entry", "tools", "hooks", "schemas", "engine",
 # Names we may publish/resolve OURSELVES (bare, when we own the name).
 _OWN_BARE = set(_PKG_MODULES)
 
+# Exec-window depth cell — THE single instance for the whole interpreter.
+# _selfimport.anchor() increments it around every exec_module it runs and
+# __init__._SelfImportFinder consults it: while it is > 0 a bare import of
+# one of OUR names may belong to our exec on ANY thread (worker threads,
+# deferred calls) — a frame-stack check cannot see those, and importlib
+# walks meta_path identically for a concurrent host import, so the cell
+# (not the stack) is the honest authorization. Located by sys.modules KEY
+# only — never `import`ed (an import of anything re-enters the finders
+# and would recurse). Created on demand by _depth_cell() below.
+_DEPTH_KEY = "_lcm2_depth_registry_ours"
+
+
+def _depth_cell():
+    c = _sys.modules.get(_DEPTH_KEY)
+    if c is None:
+        import types as _t
+        c = _t.ModuleType(_DEPTH_KEY)
+        setattr(c, "CELL", [0])
+        _sys.modules[_DEPTH_KEY] = c
+    return getattr(c, "CELL")
+
+
+_DEPTH = _depth_cell()
+
 
 class _SelfImportFinder(_ilabc.MetaPathFinder):
     """Resolve OUR OWN bare sibling imports (import tools/pgconn/... inside
@@ -64,16 +88,17 @@ class _SelfImportFinder(_ilabc.MetaPathFinder):
     """
 
     def find_spec(self, fullname, path=None, target=None):
-        if _ENGAGED[0] <= 0:
+        if _ENGAGED[0] <= 0 and _DEPTH[0] <= 0:
             return None
-        # F-1 (FIX-3): SAME origin gate as _selfimport._SibFinder. The
-        # counter alone is process-global, so while OUR exec window is
-        # open a CONCURRENT host-thread `import tools` (plugin-discovery
-        # thread vs the CLI import chain) was served our flat tools.py —
-        # 'tools' stranded as non-package = the residual boot race.
-        # Serve only when a frame from OUR dir is on THIS thread's
-        # import stack (find_spec runs on the importing thread).
-        if not _origin_is_ours():
+        # F-1 (P2FLIP): ORIGIN gate only when NO exec window is open.
+        # _DEPTH > 0 (a _selfimport.anchor() exec is running somewhere in
+        # the process) IS the authorization: the import belongs to our
+        # exec (worker thread, deferred call, nested anchor). Frame stacks
+        # mean nothing to a concurrent HOST-thread import (importlib walks
+        # meta_path identically for `tools.<sub>` -> parent 'tools'), so
+        # the counter is only ever consulted on OUR side of the race and
+        # nothing here publishes a host-owned bare name anyway.
+        if _DEPTH[0] <= 0 and not _origin_is_ours():
             return None
         name = fullname.split(".")[0] if fullname in _OWN_BARE else fullname
         if name not in _OWN_BARE:
