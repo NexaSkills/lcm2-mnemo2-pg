@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import json
 
-try:
-    from _selfimport import anchor as _anchor  # file-anchored: never the host's
-except Exception:  # F-2: post-register host-origin calls; the F1 purge
-    import __init__ as _pkg  # deletes the bare '_selfimport' key — OUR
-    _anchor = _pkg._anchor   # package __init__ resolves it qualified
+
+def _anchor_late(name):
+    import plugin_entry as _pe  # F-2: post-register host-origin calls;
+    return _pe._pkg_init()._anchor(name)  # the F1 purge frees the bare
+
+
+_anchor = _anchor_late  # '_selfimport' key — plugin_entry resolves
+                        # OUR package by file, never by bare name
 # Resolved lazily in handle(): anchoring 'tools' at module IMPORT time
 # publishes a bare name (under the plugin's package that is harmless, but
 # the host module-namespace loader may exec this file with a package name
