@@ -14,8 +14,7 @@ def _anchor_late():
         from _selfimport import anchor
         return anchor
     except Exception:
-        import __init__ as _pkg  # only ever OUR package __init__
-        return _pkg._anchor
+                return _pkg_init()._anchor
 
 
 try:  # file-anchored sibling (F1: a bare `import pgconn` under the
@@ -91,3 +90,35 @@ def make_subagent_recorder(engine_factory, kind: str):
         except Exception as exc:
             logger.warning("lcm2-pg %s hook: %s", kind, exc)
     return _hook
+
+
+def _pkg_init():
+    """OUR package __init__ module by FILE (the bare `__init__` name is
+    freed by the F1 purge and belongs to the host; F-2 late-call
+    resolver). Shares the namespaced key '_lcm2_pg_pkg' with every other
+    copy: one shared package instance process-wide."""
+    import importlib.util as _ilu
+    import os as _os
+    import sys as _s
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    init = _os.path.realpath(_os.path.join(here, "__init__.py"))
+    mod = _s.modules.get("_lcm2_pg_pkg")
+    if mod is not None and getattr(mod, "__file__", None) and \
+            _os.path.realpath(getattr(mod, "__file__", "") or "") == init:
+        return mod
+    for key, m in list(_s.modules.items()):
+        f = getattr(m, "__file__", None) if m is not None else None
+        if f and _os.path.realpath(f) == init and \
+                callable(getattr(m, "_anchor", None)):
+            _s.modules["_lcm2_pg_pkg"] = m
+            return m
+    spec = _ilu.spec_from_file_location(
+        "_lcm2_pg_pkg", init, submodule_search_locations=[here])
+    mod = _ilu.module_from_spec(spec)
+    _s.modules["_lcm2_pg_pkg"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        _s.modules.pop("_lcm2_pg_pkg", None)
+        raise
+    return mod
