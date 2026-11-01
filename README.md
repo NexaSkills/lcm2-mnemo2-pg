@@ -55,3 +55,13 @@ tests-before-code, verification-before-assertion.
    will land here as `scripts/migrate_*.sh`).
 
 Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.
+
+## Requirements — postgres binaries
+
+The dedicated cluster reuses the Postgres binaries already installed by the
+lcm-pg fleet standard: `PGBIN` defaults to `~/lcm-pg/pg/bin` (`postgres`,
+`initdb`, `psql`, `pg_ctl`). The instance scripts (`setup_instance.sh`,
+`ensure_instance.sh`) refuse to run if that directory is missing or lacks
+`postgres` — install/lcm-pg first, or export `PGBIN=/path/to/pg/bin` before
+running them. This is a deliberate shared-dependency (QA F5): one binary set,
+two clusters (`lcm-pg` :54329, `lcm2-mnemo2-pg` :54331), no duplicate installs.
