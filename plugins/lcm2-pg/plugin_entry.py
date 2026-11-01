@@ -7,55 +7,76 @@ Register entry point (Hermes plugin contract):
 """
 from __future__ import annotations
 
+import importlib.util as _ilu
 import json
 import logging
 import os
+import sys as _sys
 
 logger = logging.getLogger("lcm2-pg")
 
 __version__ = "0.2.0"
 
 
+def _pkg_init():
+    """OUR package __init__ module object, by FILE under a namespaced key
+    (never `import __init__` — the bare name resolves the HOST's module
+    of that name; F-2 late-call resolver)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    init = os.path.realpath(os.path.join(here, "__init__.py"))
+    for key, mod in list(_sys.modules.items()):
+        # the package that already EXECUTED this exact file (host's
+        # canonical import, or a previous resolver call) — reuse it.
+        if key == "__main__" or mod is None or mod is _sys.modules.get("_lcm2_pg_pkg"):
+            continue
+        if getattr(mod, "__file__", None) and \
+                os.path.realpath(getattr(mod, "__file__", "") or "") == init \
+                and os.path.dirname(os.path.realpath(
+                    getattr(mod, "__file__", "") or "")) == \
+                os.path.realpath(here) and callable(getattr(mod, "_anchor", None)):
+            return mod
+    mod = _sys.modules.get("_lcm2_pg_pkg")
+    if mod is not None and callable(getattr(mod, "_anchor", None)):
+        return mod
+    spec = _ilu.spec_from_file_location(
+        "_lcm2_pg_pkg", init, submodule_search_locations=[here])
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise ImportError(f"lcm2-pg: package __init__ missing in {here}")
+    mod = _ilu.module_from_spec(spec)
+    _sys.modules["_lcm2_pg_pkg"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:  # never leave a half-built alias behind
+        if _sys.modules.get("_lcm2_pg_pkg") is mod:
+            del _sys.modules["_lcm2_pg_pkg"]
+        raise
+    return mod
+
+
+def _anchor_late():
+    """anchor() callable for LATE (post-register, host-origin) calls:
+    resolves OUR _selfimport through the package, never the bare name
+    the F1 purge frees (F-2 fix route b)."""
+    return _pkg_init()._anchor
+
+
 def _engine_factory_from_env():
     try:  # F-2: late (host-origin) call — the F1 purge deletes the bare
         from _selfimport import anchor
     except Exception:      # '_selfimport' key; OUR package __init__
-        import __init__ as _pkg  # resolves anchor() package-qualified
-        anchor = _pkg._anchor
+        anchor = _anchor_late()  # resolves anchor() package-qualified
     return anchor("engine").LCM2Engine()
 
 
 def _release_all():
     """release_all() for the end of register(): resolve _selfimport via a
-    key that exists HERE (bare during the exec window; the namespaced
-    alias survives the purge) — never a bare host-bound import."""
+    key that exists HERE (bare during the exec window; the package route
+    survives the purge) — never a bare host-bound import."""
     try:
         from _selfimport import release_all
         return release_all
     except Exception:
-        import __init__ as _pkg  # only ever OUR package __init__
-        return _pkg._selfimport_module().release_all
-
-
-def _pkg_init():
-    """OUR package __init__ module object, resolved via __spec__ (never
-    `import __init__` — the bare name resolves the HOST's module of that
-    name, and sys.modules keys get purged after register())."""
-    import importlib.util as _ilu
-    import os as _os
-    init = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                         "__init__.py")
-    m = getattr(__spec__, "parent", None)
-    mod = __import__("sys").modules.get(m) if m else None
-    if mod is not None and getattr(mod, "_lcm2_pkg_marker", None) == init:
-        return mod
-    spec = _ilu.spec_from_file_location(
-        "_lcm2_pg_pkg", init, submodule_search_locations=[_os.path.dirname(init)])
-    mod = _ilu.module_from_spec(spec)
-    __import__("sys").modules["_lcm2_pg_pkg"] = mod
-    spec.loader.exec_module(mod)
-    mod._lcm2_pkg_marker = init
-    return mod
+        return _pkg_init()._selfimport_module().release_all
 
 
 def register(ctx, engine_factory=None):
@@ -138,8 +159,12 @@ def register(ctx, engine_factory=None):
             "LCM_ENABLE_SLASH_COMMAND", "1") != "0":
         command = anchor("command")
         try:
-            from hermes_cli.commands import resolve_command
-            taken = resolve_command("lcm") is not None
+            # OUR command module (file-anchored), not the host registry's
+            # binding: the SAME plugin is seen by both loaders and the
+            # other loader's copy may have grabbed `/lcm` first (R3
+            # isolation makes those distinct module objects).
+            from hermes_cli.plugins import get_plugin_commands
+            taken = "lcm" in (get_plugin_commands() or {})
         except Exception:
             taken = False
         if not taken:

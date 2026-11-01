@@ -411,15 +411,15 @@ class LCM2Engine:
         if mod is not None and getattr(mod, "__file__", None) and \
                 pathlib.Path(mod.__file__).resolve() == path:
             return mod
-        spec = importlib.util.spec_from_file_location(
-            "lcm2_pg_plugin_tools", path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["lcm2_pg_plugin_tools"] = mod
         # tools.py bare-imports our siblings (pgconn, engine, ...). NEVER
         # touch the global sys.path (host boot imports concurrently; any
         # host `import tools.<sub>` while our dir is on sys.path binds our
         # flat file — F1 boot crash). Serve the siblings through the
         # _selfimport._SibFinder (exact own names, transient) instead.
+        spec = importlib.util.spec_from_file_location(
+            "lcm2_pg_plugin_tools", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("lcm2_pg_plugin_tools", mod)
         try:
             from _selfimport import _SibFinder as _SF  # ours, by file
         except Exception:
