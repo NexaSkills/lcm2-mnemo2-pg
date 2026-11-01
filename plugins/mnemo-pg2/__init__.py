@@ -1,26 +1,19 @@
-"""mnemo-pg2 — PG-native Lossless Context Management (Phase 2+).
+"""mnemo-pg2 — PG-native mnemosyne memory provider on mnemo2db.
 
-Hermes plugin: register(ctx) wires the context engine, 15 tools, hooks,
-and the /lcm command. Storage lives in the sibling modules (pgconn, ddl,
-engine, tools, hooks, schemas, command) — zero embedded-DB code by
+Hermes plugin: register(ctx) wires the vendor-parity 42-tool mnemosyne_*
+surface and the lifecycle hooks. Storage lives in the sibling modules
+(pgconn, ddl, engine, plugin_entry) — zero embedded-DB code by
 construction (R3: none of them import host modules).
 
-Two host routes, one implementation:
-
-1. GENERAL plugin load (this package imported whole): register() below
-   loads plugin_entry by FILE (namespaced module name) and delegates to
-   it. Siblings bind via _selfimport.anchor() (file location), so a
-   host-root or third-party module that owns a bare name (tools, engine,
-   schemas, ...) can never be silently hijacked by our imports.
-   sys.modules is restored afterwards: our registration leaves the
-   interpreter as it found it.
-
-2. CONTEXT-ENGINE load (`context.engine: mnemo-pg2`): the loader probes
-   dirs whose __init__.py mentions ContextEngine (this docstring is the
-   marker) and instantiates module.LCM2PgContextEngine if present — a
-   host ContextEngine subclass from context_engine_shim.py, loaded by
-   FILE under a namespaced module name (publishes no bare names). Every
-   protocol method delegates to the plugin's LCM2Engine verbatim.
+ONE host route: GENERAL plugin load (this package imported whole):
+register() below loads plugin_entry by FILE (namespaced module name) and
+delegates to it. Siblings bind via _selfimport.anchor() (file location),
+so a host-root or third-party module that owns a bare name (tools,
+engine, schemas, ...) can never be silently hijacked by our imports.
+sys.modules is restored afterwards: our registration leaves the
+interpreter as it found it. mnemo-pg2 is a MEMORY provider, NOT a
+context/compression engine — it deliberately registers no context engine
+(this docstring carries no ContextEngine marker on purpose).
 
 F1 IMPORT CONTRACT (the "'tools' is not a package" boot crash): our dir
 holds flat FILES that share the host's bare PACKAGE names (tools, engine,
@@ -44,8 +37,8 @@ import os as _os
 import sys as _sys
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
-_PKG_MODULES = ("plugin_entry", "tools", "hooks", "schemas", "engine",
-                "command", "pgconn", "ddl", "rollup_periods", "_selfimport")
+_PKG_MODULES = ("plugin_entry", "engine", "pgconn", "ddl", "embed",
+                "_selfimport")
 
 # Names we may publish/resolve OURSELVES (bare, when we own the name).
 _OWN_BARE = set(_PKG_MODULES)
@@ -167,11 +160,26 @@ def _engage():
     return _disarm
 
 
+_BRIDGE_CLASS = "MnemoPg2ContextEngine"
+
+
 def _load_bridge():
-    """context_engine_shim.py by FILE (namespaced; publishes no bare name)."""
+    """context_engine_shim.py by FILE (namespaced; publishes no bare name).
+
+    Phase-3 (spec §3): mnemo-pg2 is a MEMORY plugin — no context-engine
+    bridge file ships in this dir (that is lcm2-pg's route). If the
+    shared key is already present it must ALSO carry our bridge class,
+    else it belongs to another plugin (lcm2-pg loaded first in the same
+    interpreter): we drop the stale shared key, re-load OUR shim file,
+    and restore the foreign module afterwards so the other plugin keeps
+    its binding (phase-2 import discipline: never leave a foreign-owned
+    bare/bridge key modified). Absent file or absent class -> None: the
+    general register() route works standalone either way.
+    """
     full = "_lcm2_pg_bridge.context_engine_shim"
-    if full in _sys.modules:
-        return _sys.modules[full]
+    foreign = _sys.modules.get(full)
+    if foreign is not None and hasattr(foreign, _BRIDGE_CLASS):
+        return foreign
     spec = _ilu.spec_from_file_location(
         full, _os.path.join(_HERE, "context_engine_shim.py"))
     if spec is None or spec.loader is None:  # pragma: no cover
@@ -197,8 +205,11 @@ def _load_bridge_quietly():
 
 
 _bridge = _load_bridge_quietly()
-if _bridge is not None:  # marker: class present => loader uses the bridge
-    LCM2PgContextEngine = _bridge.LCM2PgContextEngine
+if _bridge is not None and hasattr(_bridge, _BRIDGE_CLASS):
+    # marker: class present => loader uses the bridge. BY DESIGN there is
+    # no context-engine class in mnemo-pg2's shim (memory plugin, spec §3):
+    # the marker stays absent so the host context loader never picks us.
+    LCM2PgContextEngine = _bridge.MnemoPg2ContextEngine
 
 
 def _ours_bound(name):
@@ -273,7 +284,10 @@ def _sibling(name):
 
 
 def register(ctx, engine_factory=None):
-    """General plugin registration: tools + hooks + /lcm command + skills.
+    """General plugin registration: 42 tools (memory toolset) + 3 hooks.
+
+    NO context engine is registered (memory plugin, spec §3 — the host
+    context slot stays lcm2-pg's; R10: two lossless engines in one slot).
 
     Leaves the interpreter as it found it: every module key our exec
     CREATED is deleted (clear()/update() cannot do that — the surviving
