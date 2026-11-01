@@ -43,7 +43,26 @@ Phase 1 ships inert skeletons (discovery-valid `plugin.yaml`, no tools/hooks).
 
 ## Scripts
 
-- `scripts/setup_instance.sh` — idempotent: initdb + unit + dbs + schemas.
+- `scripts/setup_instance.sh` — idempotent: initdb + unit (+ role bootstrap via
+  single-user backend) + dbs + schemas. All binaries from the private PGBIN.
+- `scripts/setup_dbs.sh [agent ...]` — idempotent: lcm2db + mnemo2db + role +
+  schemas on the dedicated instance only; fails loudly if a `shared` schema ever
+  appears in lcm2db (R2 guard).
 - `scripts/ensure_instance.sh` — 2-min systemd-timer watchdog that self-heals
   role/hba/dbs/schemas if any rogue process breaks them (log: ~/.hermes/logs/lcm2-mnemo2-ensure.log).
 - `scripts/onboard_profile.sh <agent>` — idempotent: profile, schemas, .env params, config via CLI, symlinks, verify.
+
+## Global params (Phase 1 addendum)
+
+`/home/mybuddy/.hermes/.env` carries the global block consumed by both plugins:
+`LCM2_PG_HOST`, `LCM2_PG_PORT`, `LCM2_PG_USER`. Per-profile `.env`
+(`LCM2_PG_DSN` / `MNEMO2_PG_DSN` / `MNEMO2_SHARED_SCHEMA`) overrides it
+(profile-first resolution, per plan §4).
+
+## Phase-0 polish carried (N1–N3, per QA-r2)
+
+- N1: spec-phase0 B4 wording — the legacy `memories` table lives in core
+  source (core/memory.py:372) + migration scripts, not only tests/ fixtures.
+- N2: "executed form" wording for PRAGMA foreign_key_check (tests-only hits).
+- N3/N4: scope-label footnote — "source-only" counts use strict `-v '/tests/'`;
+  substring exclusion shifts sqlite_vec src count 44→43 (cosmetic only).
