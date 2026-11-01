@@ -22,8 +22,13 @@ ROLE=${ROLE:-mnemo201}
 run() { if [ "$DRY" = "--dry-run" ]; then echo "DRY: $*"; else "$@"; fi; }
 
 echo "== 1. profile =="
-if [ ! -d "$HERMES_HOME/profiles/$AGENT" ]; then
-  run hermes profile create "$AGENT" --description "$AGENT (lcm2-mnemo2-redesign test agent)" --no-alias
+if [ ! -f "$HERMES_HOME/profiles/$AGENT/config.yaml" ]; then
+  # dir may exist as a stub without config.yaml; hermes refuses create then
+  if [ -d "$HERMES_HOME/profiles/$AGENT" ]; then
+    echo "NOTE: $AGENT dir exists without config.yaml; hermes treats it as existing"
+  fi
+  run hermes profile create "$AGENT" --description "$AGENT (lcm2-mnemo2-redesign test agent)" --no-alias || true
+  [ -f "$HERMES_HOME/profiles/$AGENT/config.yaml" ] || { echo "FATAL: no config.yaml for $AGENT after create" >&2; exit 1; }
 fi
 [ -n "$DRY" ] && { echo "DRY done"; exit 0; }
 
@@ -67,10 +72,19 @@ for d in "$HERMES_HOME/plugins" "$HERMES_HOME/profiles/$AGENT/plugins"; do
   run ln -sfn "$REPO/plugins/mnemo-pg2" "$d/mnemo-pg2"
 done
 
-echo "== 6. verify =="
+echo "== 6. plugin enable (idempotent; CLI, not config-file edits) =="
+for pl in lcm2-pg mnemo-pg2; do
+  if hermes -p "$AGENT" plugins list 2>/dev/null | grep -qE "│ *$pl .*│ enabled"; then
+    echo "$pl already enabled for $AGENT"
+  else
+    run hermes -p "$AGENT" plugins enable "$pl"
+  fi
+done
+
+echo "== 7. verify =="
 [ "$DRY" = "--dry-run" ] && { echo "DRY done"; exit 0; }
 hermes -p "$AGENT" config get context.engine
-hermes -p "$AGENT" config get memory.provider
+hermes -p "$AGENT" plugins list 2>/dev/null | grep -E "lcm2-pg|mnemo-pg2" || true
 $PSQL -d lcm2db   -Atc "SELECT 1 FROM pg_namespace WHERE nspname='lcm2_$AGENT'" | grep -q 1 && echo "schema lcm2_$AGENT OK"
 $PSQL -d mnemo2db -Atc "SELECT 1 FROM pg_namespace WHERE nspname='mnemo2_$AGENT'" | grep -q 1 && echo "schema mnemo2_$AGENT OK"
 echo "DONE $AGENT"
