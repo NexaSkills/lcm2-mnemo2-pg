@@ -42,6 +42,7 @@ import importlib.machinery as _ilmach
 import importlib.util as _ilu
 import os as _os
 import sys as _sys
+import threading as _threading
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _PKG_MODULES = ("plugin_entry", "tools", "hooks", "schemas", "engine",
@@ -162,7 +163,7 @@ def register(ctx, engine_factory=None):
         if n in _sys.modules and not _is_ours(n):
             _sys.modules.pop(n, None)
     _disarm = _engage()  # bare sibling imports -> our files, by file
-    _stop = threading.Event()
+    _stop = _threading.Event()
 
     def _revert_loop():
         # While our register() runs, the HOST boot imports concurrently in
@@ -188,7 +189,7 @@ def register(ctx, engine_factory=None):
             except Exception:
                 return
 
-    _watch = threading.Thread(target=_revert_loop, daemon=True,
+    _watch = _threading.Thread(target=_revert_loop, daemon=True,
                               name="lcm2-pg:restore-watch")
     _watch.start()
     try:
