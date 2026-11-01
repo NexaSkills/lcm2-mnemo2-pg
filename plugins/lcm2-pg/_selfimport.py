@@ -24,6 +24,40 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PKG = (__package__ or "").split(".")[0]
 _ANCHORED: set = set()  # names ever anchor()'d in this interpreter
+# Bare names the HOST repo root legitimately owns as packages (tools,
+# engine, pgconn, ...). anchor() may publish OUR module under them ONLY
+# while OUR frames are importing (restore evicts them again); leaving
+# one published after anchor() returns is what strands the host's later
+# `import tools.<sub>` ('tools' is not a package — F1 boot crash).
+HOST_BARE = {"tools", "engine", "pgconn", "schemas", "command", "hooks",
+             "ddl", "rollup_periods"}
+
+
+class _SibFinder:
+    """Serve OUR bare sibling imports from OUR dir WITHOUT sys.path.
+
+    Installed for the duration of an anchor() exec only. Serves exactly
+    the plugin's own module names and nothing else; a host-origin import
+    that reaches here while we're mid-exec still resolves correctly (the
+    name it asks for is one of OURS by definition of this window, and
+    sys.modules was just checked by the import machinery before finders
+    run).
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if "." in fullname:
+            return None
+        if fullname not in _NAMES:
+            return None
+        import importlib.util
+        f = os.path.join(_HERE, fullname + ".py")
+        if not os.path.isfile(f):
+            return None
+        return importlib.util.spec_from_file_location(fullname, f)
+
+
+_NAMES = {"plugin_entry", "tools", "hooks", "schemas", "engine", "command",
+          "pgconn", "ddl", "rollup_periods", "_selfimport"}
 
 
 def _mine(mod) -> bool:
@@ -48,21 +82,26 @@ def anchor(name: str, filename: str | None = None):
         spec = importlib.util.spec_from_file_location(full, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"lcm2-pg: cannot build spec for {path}")
-        # the target module's OWN bare sibling imports (tools -> engine ->
-        # pgconn...) must resolve to our directory too: prepend our dir
-        # for the duration and restore sys.path afterwards.
-        sp = _HERE
-        had = sp in sys.path
-        if not had:
-            sys.path.insert(0, sp)
+        # The target module's OWN bare sibling imports (tools -> engine ->
+        # pgconn...) must resolve to our files. NEVER insert _HERE into
+        # the global sys.path: the host boots with concurrent import
+        # threads and any host `import tools.<sub>` landing while our dir
+        # is on sys.path binds OUR flat tools.py ('tools' is not a
+        # package — F1 boot crash), no matter how briefly. Serve the
+        # siblings through a transient meta-path finder instead (exact
+        # names only; global sys.path is never touched).
+        finder = _SibFinder()
+        inserted = finder not in sys.meta_path
+        if inserted:
+            sys.meta_path.insert(0, finder)
         try:
             mod = importlib.util.module_from_spec(spec)
             sys.modules[full] = mod
             spec.loader.exec_module(mod)
         finally:
-            if not had:
+            if inserted:
                 try:
-                    sys.path.remove(sp)
+                    sys.meta_path.remove(finder)
                 except ValueError:
                     pass
     # publish under the bare + package names (evicting foreign holders;

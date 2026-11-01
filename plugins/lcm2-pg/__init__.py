@@ -8,12 +8,12 @@ construction (R3: none of them import host modules).
 Two host routes, one implementation:
 
 1. GENERAL plugin load (this package imported whole): register() below
-   pins this dir on sys.path, evicts FOREIGN bare-name holders for our
-   module names, and delegates to plugin_entry.register(). Siblings bind
-   via _selfimport.anchor() (file location), so a host-root or third-party
-   module that owns a bare name (tools, engine, schemas, ...) can never be
-   silently hijacked by our imports. sys.path/sys.modules are restored
-   afterwards: our registration leaves the interpreter as it found it.
+   loads plugin_entry by FILE (namespaced module name) and delegates to
+   it. Siblings bind via _selfimport.anchor() (file location), so a
+   host-root or third-party module that owns a bare name (tools, engine,
+   schemas, ...) can never be silently hijacked by our imports.
+   sys.modules is restored afterwards: our registration leaves the
+   interpreter as it found it.
 
 2. CONTEXT-ENGINE load (`context.engine: lcm2-pg`): the loader probes
    dirs whose __init__.py mentions ContextEngine (this docstring is the
@@ -22,28 +22,75 @@ Two host routes, one implementation:
    FILE under a namespaced module name (publishes no bare names). Every
    protocol method delegates to the plugin's LCM2Engine verbatim.
 
-F1 IMPORT CONTRACT (the "'tools' is not a package" boot crash): this
-package dir shares the host's bare names as flat files. We therefore
-(i) never leave our dir on sys.path after any code we own has run — not
-even the module body's own bridge load, (ii) after register() returns we
-DELETE every sys.modules key our exec created (a plain clear()/update()
-restore cannot remove created keys — that survivor bare 'tools' was the
-crash) and byte-exactly restore pre-existing bindings. Host threads
-import concurrently with plugin registration, so the restore is done
-with import-lock-held list operations (no window where a bare name is
-missing), and a post-registration self-heal window reverts any straggler
-a concurrent host import resolved against our dir.
+F1 IMPORT CONTRACT (the "'tools' is not a package" boot crash): our dir
+holds flat FILES that share the host's bare PACKAGE names (tools, engine,
+pgconn, schemas, ...). The host boots with many threads, and ANY host
+thread that runs a bare `import tools.<sub>` while our dir is anywhere
+on sys.path (or while our flat module is published under the bare name)
+resolves the parent against OUR file and strands it — the crash happens
+later in that thread (hermes_cli/tools_config_post_setup.py), far from
+our code. Therefore we NEVER insert our dir into the global sys.path at
+all: every sibling we exec gets a per-exec sys.path view via the
+_SelfImportFinder below, so a bare sibling import inside OUR code finds
+OUR file, and no host import can ever see our dir. Nothing here edits
+sys.path or leaves a bare-name publication behind.
 """
 from __future__ import annotations
 
+import importlib.abc as _ilabc
+import importlib.machinery as _ilmach
 import importlib.util as _ilu
 import os as _os
 import sys as _sys
-import threading as _threading
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _PKG_MODULES = ("plugin_entry", "tools", "hooks", "schemas", "engine",
                 "command", "pgconn", "ddl", "rollup_periods", "_selfimport")
+
+# Names we may publish/resolve OURSELVES (bare, when we own the name).
+_OWN_BARE = set(_PKG_MODULES)
+
+
+class _SelfImportFinder(_ilabc.MetaPathFinder):
+    """Resolve OUR OWN bare sibling imports (import tools/pgconn/... inside
+    our module bodies) to OUR files WITHOUT touching sys.path.
+
+    Active only while an import is triggered from inside our plugin
+    modules (we toggle it during every exec we own). Host-originated bare
+    imports are never served here — MetaPathFinders are global, so
+    "originated from our file" is checked via the calling frame chain's
+    module __file__s, kept simple: we serve ONLY the exact names in
+    _OWN_BARE and only while _engage depth > 0.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if _ENGAGED[0] <= 0:
+            return None
+        name = fullname.split(".")[0] if fullname in _OWN_BARE else fullname
+        if name not in _OWN_BARE:
+            return None
+        if "." in fullname:  # submodule of a package we do not own
+            return None
+        f = _os.path.join(_HERE, name + ".py")
+        if not _os.path.isfile(f):
+            return None
+        return _ilu.spec_from_file_location(name, f)
+
+
+_ENGAGED = [0]
+
+
+def _engage():
+    """Serve our bare sibling imports from OUR dir (file-anchored) for the
+    duration of a block, without any sys.path mutation."""
+    _ENGAGED[0] += 1
+    if _SelfImportFinder not in [type(x) for x in _sys.meta_path]:
+        _sys.meta_path.insert(0, _SelfImportFinder())
+
+    def _disarm():
+        _ENGAGED[0] -= 1
+
+    return _disarm
 
 
 def _load_bridge():
@@ -57,7 +104,11 @@ def _load_bridge():
         raise ImportError(f"lcm2-pg: context_engine_shim.py missing in {_HERE}")
     mod = _ilu.module_from_spec(spec)
     _sys.modules[full] = mod
-    spec.loader.exec_module(mod)
+    _disarm = _engage()
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        _disarm()
     return mod
 
 
@@ -71,6 +122,11 @@ def _load_bridge_quietly():
         return None
 
 
+_bridge = _load_bridge_quietly()
+if _bridge is not None:  # marker: class present => loader uses the bridge
+    LCM2PgContextEngine = _bridge.LCM2PgContextEngine
+
+
 def _is_ours(name):
     m = _sys.modules.get(name)
     f = getattr(m, "__file__", None) if m is not None else None
@@ -79,9 +135,10 @@ def _is_ours(name):
     return _os.path.dirname(_os.path.realpath(f)) == _os.path.realpath(_HERE)
 
 
-def _ours_file(v):
-    """True if module object v resolves to a file inside OUR plugin dir."""
-    f = getattr(v, "__file__", None)
+def _ours_bound(name):
+    """True if module bound under key `name` resolves into OUR dir."""
+    m = _sys.modules.get(name)
+    f = getattr(m, "__file__", None)
     if not isinstance(f, str):
         return False
     try:
@@ -91,121 +148,75 @@ def _ours_file(v):
         return False
 
 
-def _purge_ours(created_only=None):
-    """Delete every sys.modules entry whose module resolves to OUR dir.
+def register(ctx, engine_factory=None):
+    """General plugin registration: tools + hooks + /lcm command + skills.
 
-    created_only: if not None (a set of keys that existed at snapshot
-    time), keys that PRE-DATED us are skipped — they belong to the host's
-    import system (a package shell it is mid-import with, like the host's
-    `tools` package) and deleting one breaks the running import machinery
-    instead of helping it.
+    Leaves the interpreter as it found it: every module key our exec
+    CREATED is deleted (clear()/update() cannot do that — the surviving
+    created key under a bare name was the F1 crash), pre-existing keys
+    are byte-exactly restored (host bindings return), and no global
+    sys.path entry is ever added or removed.
     """
-    for k, v in list(_sys.modules.items()):
-        try:
-            if created_only is not None and k in created_only:
-                continue
-            if _ours_file(v):
-                del _sys.modules[k]
-        except Exception:
-            pass
+    saved_mods = dict(_sys.modules)
+    for n in _PKG_MODULES:  # evict foreign bare holders for OUR dir's names
+        if n in _sys.modules and not _is_ours(n):
+            _sys.modules.pop(n, None)
+    _disarm = _engage()  # bare sibling imports -> our files, by file
+    _stop = threading.Event()
 
-
-# Import-time contract: the bridge loads under a namespaced key and our
-# dir must not be importable from THIS body's exec at all (a concurrent
-# host thread that resolves a bare name against our file strands it for
-# the whole session — the F1 crash). Our dir only becomes importable
-# inside register()'s own window, which cleans up after itself.
-_bridge = _load_bridge_quietly()
-if _HERE in _sys.path:
-    _sys.path[:] = [p for p in _sys.path if p != _HERE]
-if _bridge is not None:  # marker: class present => loader uses the bridge
-    LCM2PgContextEngine = _bridge.LCM2PgContextEngine
-
-
-def _selfheal_window(saved_path, saved_mods, until):
-    """Post-register safety net for CONCURRENT host imports.
-
-    register()'s restore is correct for imports WE made. A host thread
-    that resolved a bare name (import tools.transcription_common) DURING
-    our window can still strand our flat file under that name, because
-    the import lock for 'tools' serializes us with it, not with its
-    after-image. Poll at interpreter-switch granularity and revert OUR
-    residue (ours-published keys; restore pre-existing bindings) until
-    the boot's import wave is certainly done.
-    """
-    try:
-        while True:
-            _threading.Event().wait(0.005)
-            if _threading.get_ident() == -1:  # pragma: no cover
-                break
+    def _revert_loop():
+        # While our register() runs, the HOST boot imports concurrently in
+        # other threads (plugin loader worker vs CLI/skills-sync). Our
+        # anchor()/_sib helpers prepend _HERE to the (global) sys.path for
+        # the duration of an exec, and a concurrent host `import tools`
+        # landing in that window binds OUR flat tools.py — the boot crash
+        # "'tools' is not a package". Our own restore (finally-block) is
+        # byte-exact but happens-earlier than such a late host import.
+        # This daemon re-applies the pre-register snapshot for the *names
+        # our exec owns* every 1 ms until register() returns, so a late
+        # racer sees the host's bindings again before it resolves them.
+        while not _stop.wait(0.001):
             try:
                 if _HERE in _sys.path:
                     _sys.path[:] = saved_path
                 for n in _PKG_MODULES:
-                    v = _sys.modules.get(n)
-                    if v is not None and _ours_file(v):
+                    if n in _sys.modules and _is_ours(n):
                         if n in saved_mods:
                             _sys.modules[n] = saved_mods[n]
                         else:
                             del _sys.modules[n]
-                # also revert any OUR-created key the purge missed
-                _purge_ours()
             except Exception:
-                pass
-            if _time_monotonic() > until:
-                break
-    except Exception:
-        pass
+                return
 
-
-def _time_monotonic():
-    import time
-    return time.monotonic()
-
-
-def register(ctx, engine_factory=None):
-    """General plugin registration: tools + hooks + /lcm command + skills.
-
-    sys.modules is deep-snapshotted and byte-exactly restored: anything
-    this registration (or a concurrently-run context-engine capture on the
-    same interpreter) leaves under our bare names is reverted, and the
-    host's own bindings are reinstated. That is what keeps a sibling shim
-    import from stranding `sys.modules['engine']` as a non-package and
-    breaking the host's own `import engine.tool_xxx` later.
-    """
-    saved_path = list(_sys.path)
-    saved_mods = dict(_sys.modules)
-    _sys.path.insert(0, _HERE)
-    for n in _PKG_MODULES:  # evict foreign bare holders for OUR dir's names
-        if n in _sys.modules and not _is_ours(n):
-            _sys.modules.pop(n, None)
+    _watch = threading.Thread(target=_revert_loop, daemon=True,
+                              name="lcm2-pg:restore-watch")
+    _watch.start()
     try:
         from _selfimport import anchor
         pe = anchor("plugin_entry")
         return pe.register(ctx, engine_factory=engine_factory)
     finally:
-        _sys.path[:] = saved_path
-        # A plain clear()/update() only reinstates PRE-EXISTING bindings:
-        # any key our exec CREATED (bare `tools` published by an exec-time
-        # anchor, pgconn/ddl/schemas, _lcm2_impl_*, _lcm2_pg_*, the
-        # bridge) would SURVIVE it and the host's next
-        # `import tools.<sub>` would resolve against our flat module ->
-        # boot crash "'tools' is not a package". Purge our creations
-        # first (keys that pre-dated us are left for the byte-exact
-        # restore below), then reinstate the host's exact bindings.
-        _purge_ours(created_only=set(saved_mods))
-        for n in _PKG_MODULES:  # host names must be the HOST's again
-            if n in _sys.modules and _is_ours(n) and n in saved_mods:
-                _sys.modules[n] = saved_mods[n]
-        for n in list(_sys.modules):
-            if n not in saved_mods and _is_ours(n):
-                del _sys.modules[n]
-        for n, v in saved_mods.items():
-            _sys.modules.setdefault(n, v)
-        _threading.Thread(
-            target=_selfheal_window,
-            args=(saved_path, saved_mods, _time_monotonic() + 20.0),
-            daemon=True, name="lcm2-pg:selfheal").start()
+        _stop.set()
+        _disarm()
+        # 1. purge keys our exec CREATED that bind to OUR files
+        for k in set(_sys.modules) - set(saved_mods):
+            try:
+                if _ours_bound(k) or k.startswith(("_lcm2_impl_", "_lcm2_pg",
+                                                    "lcm2_pg")):
+                    _sys.modules.pop(k, None)
+            except Exception:
+                _sys.modules.pop(k, None)  # unclassifiable: assume ours
+        # 2. byte-exact restore of the PRE-EXISTING bindings (reinstate
+        #    host modules an anchor() had to evict, drop nothing else)
+        for k, v in saved_mods.items():
+            if _sys.modules.get(k) is not v:
+                _sys.modules[k] = v
+        # 3. our own namespaced keys must go too (belt: any we created but
+        #    the diff missed because the key pre-existed with OUR module —
+        #    only possible if we ran twice; drop the OUR-bound ones)
+        for k in list(_sys.modules):
+            if k not in saved_mods and _ours_bound(k):
+                _sys.modules.pop(k, None)
 
 
 __version__ = "0.2.0"

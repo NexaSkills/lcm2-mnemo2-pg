@@ -399,21 +399,32 @@ class LCM2Engine:
             "lcm2_pg_plugin_tools", path)
         mod = importlib.util.module_from_spec(spec)
         sys.modules["lcm2_pg_plugin_tools"] = mod
-        # tools.py bare-imports our siblings (pgconn, engine, ...); the
-        # context-engine capture loader may not have our dir on sys.path,
-        # so prepend it for the exec ONLY (restore in finally). If a
-        # sibling bare name already resolves to OUR file (shim anchors
-        # them), the import hits sys.modules first and sys.path is inert.
-        sp = str(path.parent)
-        had = sp in sys.path
-        if not had:
-            sys.path.insert(0, sp)
+        # tools.py bare-imports our siblings (pgconn, engine, ...). NEVER
+        # touch the global sys.path (host boot imports concurrently; any
+        # host `import tools.<sub>` while our dir is on sys.path binds our
+        # flat file — F1 boot crash). Serve the siblings through the
+        # _selfimport._SibFinder (exact own names, transient) instead.
+        try:
+            from _selfimport import _SibFinder as _SF  # ours, by file
+        except Exception:
+            import sys as _s
+            _p = str(pathlib.Path(__file__).resolve().parent / "_selfimport.py")
+            _sp = importlib.util.spec_from_file_location(
+                "_lcm2_impl__selfimport", _p)
+            _m = importlib.util.module_from_spec(_sp)
+            _s.modules.setdefault("_lcm2_impl__selfimport", _m)
+            _sp.loader.exec_module(_m)
+            _SF = _m._SibFinder
+        _finder = _SF()
+        _inserted = _finder not in sys.meta_path
+        if _inserted:
+            sys.meta_path.insert(0, _finder)
         try:
             spec.loader.exec_module(mod)
         finally:
-            if not had:
+            if _inserted:
                 try:
-                    sys.path.remove(sp)
+                    sys.meta_path.remove(_finder)
                 except ValueError:
                     pass
         LCM2Engine._tools_mod = mod
