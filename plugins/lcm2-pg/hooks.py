@@ -6,7 +6,25 @@ import json
 import logging
 import os
 
-import pgconn
+try:  # file-anchored sibling (F1: a bare `import pgconn` under the
+    from _selfimport import anchor as _anchor
+    pgconn = _anchor("pgconn")  # context-engine module-namespace route
+    _pgconn_bare = False       # would hijack the HOST's own pgconn for
+except Exception:              # every later import in the process
+    import pgconn              # last-resort (general route: our file wins)
+    _pgconn_bare = True
+
+def _pg():
+    """pgconn module, resolved lazily if the exec-time anchor failed."""
+    global pgconn, _pgconn_bare
+    if _pgconn_bare:
+        try:
+            from _selfimport import anchor
+            pgconn = anchor("pgconn")
+            _pgconn_bare = False
+        except Exception:
+            pass
+    return pgconn
 
 logger = logging.getLogger("lcm2-pg")
 
