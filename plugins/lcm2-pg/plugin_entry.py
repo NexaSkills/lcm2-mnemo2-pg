@@ -145,8 +145,7 @@ def register(ctx, engine_factory=None):
     # dispatch time and the host re-imports `engine.*` submodules — a file
     # module under either name breaks those imports for the whole session.
     try:
-        from _selfimport import release_all
-        release_all()
+        _release_all()()
     except Exception:
         pass
 

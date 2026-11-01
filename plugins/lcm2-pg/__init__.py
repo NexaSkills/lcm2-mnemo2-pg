@@ -66,6 +66,15 @@ class _SelfImportFinder(_ilabc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if _ENGAGED[0] <= 0:
             return None
+        # F-1 (FIX-3): SAME origin gate as _selfimport._SibFinder. The
+        # counter alone is process-global, so while OUR exec window is
+        # open a CONCURRENT host-thread `import tools` (plugin-discovery
+        # thread vs the CLI import chain) was served our flat tools.py —
+        # 'tools' stranded as non-package = the residual boot race.
+        # Serve only when a frame from OUR dir is on THIS thread's
+        # import stack (find_spec runs on the importing thread).
+        if not _origin_is_ours():
+            return None
         name = fullname.split(".")[0] if fullname in _OWN_BARE else fullname
         if name not in _OWN_BARE:
             return None
@@ -75,6 +84,30 @@ class _SelfImportFinder(_ilabc.MetaPathFinder):
         if not _os.path.isfile(f):
             return None
         return _ilu.spec_from_file_location(name, f)
+
+
+def _origin_is_ours():
+    """True if any frame on the CURRENT import stack belongs to a module
+    whose file lives in OUR plugin dir (the _selfimport._SibFinder
+    predicate, mirrored so late anchor()-less windows gate identically)."""
+    try:
+        here = _os.path.realpath(_HERE)
+    except Exception:
+        return False
+    try:
+        fr = _sys._getframe(1)
+    except Exception:
+        return False
+    while fr is not None:
+        fn = getattr(fr, "f_globals", {}).get("__file__", "")
+        if isinstance(fn, str) and fn:
+            try:
+                if _os.path.dirname(_os.path.realpath(fn)) == here:
+                    return True
+            except Exception:
+                pass
+        fr = fr.f_back
+    return False
 
 
 _ENGAGED = [0]
