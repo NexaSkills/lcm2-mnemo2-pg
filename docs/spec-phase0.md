@@ -163,7 +163,9 @@ names. The 6 omitted by the original list: `foreign_key_check`, `is`,
 `schema_version`, `settings`, `user_version`, `verification` — note `is` is a
 false-positive from the sentence "…the pragma is a plain read…" (db_bootstrap.py:150)
 and `settings`/`verification` occur only in comments; executed-form additions are
-foreign_key_check, schema_version, user_version.
+schema_version, user_version (`foreign_key_check` occurs only as the query form
+`PRAGMA foreign_key_check`, 3 occurrences, per QA N2 — listed under query forms
+below, not set/executed forms).
 - PRAGMA set (executed forms): busy_timeout(30s), journal_mode(WAL), synchronous,
   journal_size_limit, mmap_size, wal_autocheckpoint, wal_checkpoint, foreign_keys,
   foreign_key_check, query_only, integrity_check, quick_check, table_info,
@@ -322,7 +324,10 @@ no `entities` table exists (0 CREATE TABLE hits). core/entities.py is pure
 regex/entity-extraction code with zero SQL; its docstring (entities.py:8) documents
 the fan-out target as the TripleStore `triples` table (subject=memory_id,
 predicate="mentions", object=entity_name) — already listed above. (Dropped alongside:
-"memories" exists only in tests/ fixtures, 0 CREATE TABLE in core source.)
+"memories" is absent from the core inventory; note it IS CREATE TABLE'd in
+core/memory.py:373 (legacy backward-compat dual-write table alongside
+working_memory; also scripts/migrate_from_legacy.py:55) and tests/ fixtures —
+excluded by design, per QA N1.)
 Persona/canonical layer: memoria_persona, memoria_preferences, memoria_instructions,
 memoria_kg, memoria_timelines, canonical_facts, consolidated_facts, gists, statements,
 data_chunks (verbatim ledger), verbatim ledger companions.

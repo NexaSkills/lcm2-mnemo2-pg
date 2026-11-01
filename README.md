@@ -36,3 +36,22 @@ tests/                TDD tests written from the plan rubric, per phase
 Governed by the project plan (owner: manny; dev: mike; QA: tessa) using the
 [Superpowers](https://github.com/obra/superpowers) methodology: plan-first,
 tests-before-code, verification-before-assertion.
+
+## Deploy / update / migrate (Phase 1 scaffold)
+
+1. `git clone https://github.com/NexaSkills/lcm2-mnemo2-pg ~/lcm2-mnemo2-pg && cd ~/lcm2-mnemo2-pg`
+2. `bash scripts/setup_instance.sh lcm2agent mnemo2agent`
+   — initdb the dedicated cluster under `~/lcm2-mnemo2-pg/pg` (port 54331,
+   systemd user service `lcm2-mnemo2-pg.service`), create `lcm2db` +
+   `mnemo2db`, seed agent schemas + mnemo2 `shared`. Idempotent; never touches
+   the existing lcm-pg cluster (:54329). Env overrides: `BASE PORT ROLE PGBIN SERVICE`.
+3. `bash scripts/onboard_profile.sh <agent>` per test agent
+   — profile create, schemas, `.env` params, config via `hermes config set`,
+   plugin symlinks (global + profile -> this checkout's `plugins/`), verify.
+   `--dry-run` prints intended changes.
+4. Update = `git pull` + re-run the two scripts (idempotent). Plugin code is
+   symlinked, so a pull is live on next session load — no per-profile copies.
+5. Migrate: none yet (Phase 2/3 define vendor→native data migration; scripts
+   will land here as `scripts/migrate_*.sh`).
+
+Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.

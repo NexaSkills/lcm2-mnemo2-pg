@@ -1,0 +1,4 @@
+name: lcm2-pg
+version: 0.1.0
+description: "LCM2 — lossless context management, PG-native (lcm2-mnemo2-redesign). Phase-1 skeleton."
+author: "NexaSkills (upstream reference: stephenschoettler/hermes-lcm)"

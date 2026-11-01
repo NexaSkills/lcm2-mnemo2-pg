@@ -1,0 +1,4 @@
+name: mnemo-pg2
+version: 0.1.0
+description: "Mnemo-pg2 — mnemosyne memory on a dedicated PG-native instance (lcm2-mnemo2-redesign). Phase-1 skeleton."
+author: "NexaSkills (upstream reference: mnemosyne-oss/mnemosyne)"

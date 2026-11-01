@@ -1,0 +1,47 @@
+# lcm2-mnemo2-pg — Phase 1 spec (scaffolding)
+
+Written 2026-11-01 (mike) per plan rubric R11 (per-phase written spec).
+Plan: `/home/mybuddy/fleet/plans/lcm2-mnemo2-redesign.plan.md` (Phase 1).
+Tests-first for Phase 2/3 are written against this layout.
+
+## Instance
+
+| Key | Value |
+|---|---|
+| Base | `/home/mybuddy/lcm2-mnemo2-pg/pg/` (`data/` cluster, `run/` socket) |
+| Binaries | `/home/mybuddy/lcm-pg/pg/bin` (PostgreSQL 18.6, private install; reuse, no re-download) |
+| Port | **54331** (distinct from the untouched lcm-pg cluster :54329) |
+| Role | `mnemo201` (SUPERUSER, cluster owner) |
+| Auth | `local all all trust` over the 0700 private socket dir — same practice as the existing lcm-pg cluster (`~/lcm-pg/instance/pg_hba.conf`) |
+| Service | systemd **user** service `lcm2-mnemo2-pg.service` (enabled, `WantedBy=default.target`) |
+| Isolation | `listen_addresses=''` (local socket only); existing cluster untouched |
+
+## Databases & schemas
+
+- `lcm2db` — private schemas only, pattern `lcm2_<agent>`. Seeded: `lcm2_lcm2agent`. **NO shared schema** (R2).
+- `mnemo2db` — private schemas `mnemo2_<agent>` + one `shared` schema for cross-agent memory. Seeded: `mnemo2_mnemo2agent`, `shared`.
+
+## Profiles (test-only, R10)
+
+`lcm2agent`, `mnemo2agent` created via `hermes profile create --no-alias`. Config keys set ONLY via `hermes -p <p> config set` (fleet rule). Per-profile `.env` carries the DSN params (global params come from `/home/mybuddy/.hermes/.env`, profile `.env` overrides — file-editable surface).
+
+- `LCM2_PG_DSN=postgresql:///lcm2db?host=<run>&port=54331&user=mnemo201`
+- `MNEMO2_PG_DSN=postgresql:///mnemo2db?host=<run>&port=54331&user=mnemo201`
+- `MNEMO2_SHARED_SCHEMA=shared`
+
+Schema is NOT pinned in the DSN: the plugins derive `lcm2_<agent>` /
+`mnemo2_<agent>` from the agent name by convention at runtime (fleet
+practice — the lcm-pg deploy strips pinned `LCM_PG_SCHEMA` for the same
+reason).
+
+## Plugin symlink layout (R6)
+
+Source lives ONCE in this checkout: `plugins/lcm2-pg/`, `plugins/mnemo-pg2/`.
+Symlinked (never copied) into `~/.hermes/plugins/` and each test profile's
+`plugins/` dir. One edit at source = visible to every agent on next load.
+Phase 1 ships inert skeletons (discovery-valid `plugin.yaml`, no tools/hooks).
+
+## Scripts
+
+- `scripts/setup_instance.sh` — idempotent: initdb + unit + dbs + schemas.
+- `scripts/onboard_profile.sh <agent>` — idempotent: profile, schemas, .env params, config via CLI, symlinks, verify.
