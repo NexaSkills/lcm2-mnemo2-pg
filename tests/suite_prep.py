@@ -57,8 +57,11 @@ def _dsn_for(db):
         v = os.environ.get(key, "")
         if f"dbname={db}" in v:
             return v
-    socket = __import__("pathlib").Path.home() / "lcm2-mnemo2-pg" / "pg" / "run"
-    return f"dbname={db} host={socket} port=54331 user=mnemo201"
+    socket = os.environ.get(
+        "LCM2_PG_HOST") or str(
+        __import__("pathlib").Path.home() / "lcm2-mnemo2-pg" / "pg" / "run")
+    port = os.environ.get("LCM2_PG_PORT", "54331")
+    return f"dbname={db} host={socket} port={port} user=mnemo201"
 
 
 def sweep_both(label=""):

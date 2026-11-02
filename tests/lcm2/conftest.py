@@ -218,6 +218,43 @@ if _own_module is None:  # pragma: no cover
         import importlib
         return importlib.import_module(name)
 
+# qa4 N-3: _pin alone is not deterministic — the pinned file's import
+# graph can still resolve bare siblings through sys.path to the sibling
+# plugin, leaving a namespaced twin without the expected attrs
+# ('module engine has no attribute LCM2Engine'). _own.own() loads OUR
+# file by PATH with a meta_path finder answering the shared bare names
+# from lcm2-pg files, so the load is self-contained.
+try:
+    import _own as _own_mod
+
+    _pin_only = _own_module
+
+    def _own_module(name):  # noqa: F811
+        try:
+            m = _own_mod.own(name)
+            if m is not None:
+                return m
+        except Exception:
+            pass
+        return _pin_only(name)
+
+    # window management: the finder is active only while lcm2 tests run
+    _lstart = globals().get("pytest_runtest_logstart")
+    _lfinish = globals().get("pytest_runtest_logfinish")
+
+    def pytest_runtest_logstart(nodeid, location):  # noqa: F811
+        if callable(_lstart):
+            _lstart(nodeid, location)
+        if location[0] and location[0].startswith("tests/lcm2"):
+            _own_mod.set_active(True)
+
+    def pytest_runtest_logfinish(nodeid, location):  # noqa: F811
+        _own_mod.set_active(False)
+        if callable(_lfinish):
+            _lfinish(nodeid, location)
+except Exception:  # pragma: no cover
+    pass
+
 # pin-plugin hooks re-exported AS CONTEST ATTRS: pytest only auto-loads
 # conftest.py files as hook providers; a sibling module (_pin_plugin.py)
 # is imported, not registered — so mirror its hooks here explicitly.

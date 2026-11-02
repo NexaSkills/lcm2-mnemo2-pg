@@ -12,13 +12,14 @@ import pgconn
 
 PSQL = str(pathlib.Path.home() / "lcm-pg" / "pg" / "bin" / "psql")
 HOST = str(pathlib.Path.home() / "lcm2-mnemo2-pg" / "pg" / "run")
-DSN = f"dbname=lcm2db host={HOST} port=54331 user=mnemo201"
+PORT = os.environ.get("LCM2_PG_PORT", "54331")  # fix7c: instance split (env bind)
+DSN = f"dbname=lcm2db host={HOST} port={PORT} user=mnemo201"
 RUN = os.environ.get("LCM2_R8_RUN") or uuid.uuid4().hex[:12]
 SCHEMAS = ["lcm2_lcm2agent", "lcm2_mnemo2agent"]
 
 
 def psql(sql):
-    r = subprocess.run([PSQL, "-h", HOST, "-p", "54331", "-U", "mnemo201",
+    r = subprocess.run([PSQL, "-h", HOST, "-p", PORT, "-U", "mnemo201",
                         "-d", "lcm2db", "-Atc", sql], capture_output=True, text=True)
     return r.stdout.strip() or r.stderr.strip()
 

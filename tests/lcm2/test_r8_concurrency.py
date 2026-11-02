@@ -24,7 +24,8 @@ import pgconn
 
 SOCKET = os.environ.get("LCM2_PG_HOST",
                         os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
-DSN = f"dbname=lcm2db host={SOCKET} port=54331 user=mnemo201"
+PORT = os.environ.get("LCM2_PG_PORT", "54331")  # fix7c: instance split (env bind)
+DSN = f"dbname=lcm2db host={SOCKET} port={PORT} user=mnemo201"
 SCHEMAS = ["lcm2_lcm2agent", "lcm2_mnemo2agent"]
 RUN = os.environ.get("LCM2_R8_RUN") or uuid.uuid4().hex[:12]  # per-process
 WORKERS = 4

@@ -14,8 +14,9 @@ import shutil
 import pytest
 
 DSN = os.environ.get("LCM2_PG_DSN") or (
-    "postgresql:///lcm2db?host=%s&port=54331&user=mnemo201"
-    % os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
+    "postgresql:///lcm2db?host=%s&port=%s&user=mnemo201"
+    % (os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"),
+       os.environ.get("LCM2_PG_PORT", "54331")))
 
 
 def _psql(sql):
