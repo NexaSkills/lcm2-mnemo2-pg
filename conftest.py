@@ -24,6 +24,10 @@ def _this_db():
 def pytest_fixture_setup(request):
     # Before any schema-minting fixture runs, public must be empty in BOTH
     # dbs (mnemo's shared-view bake repopulates public live otherwise).
-    if request.fixturedef.argname in ("dsn", "priv_schema", "shared_schema",
-                                      "mnemo_schema", "schema"):
+    try:
+        name = getattr(request, "fixturename", None) or \
+            getattr(getattr(request, "fixturedef", None), "argname", "")
+    except Exception:
+        name = ""
+    if name in ("dsn", "priv_schema", "shared_schema", "mnemo_schema", "schema"):
         suite_prep.sweep_both("pre-ddl")
