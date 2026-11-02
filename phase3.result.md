@@ -386,5 +386,14 @@ A FIX1 dispatch (pid 3292067, owns the plugin.yaml requires_toolsets
 edit) is changing, so it is excluded from Phase 3's final SHA.
 FINAL_SHA (Phase 3): a8b9785.
 
-PHASE 3 COMPLETE (final reconcile at pushed a8b9785; gates green on the
+AMENDMENT-2 (05:36): the append above rode its own push (a8b9785 ->
+8adfb7d, result-file-only: git diff a8b9785..8adfb7d = phase3.result.md
++14/-1, product tree byte-identical). Gate at the EXACT tip 8adfb7d,
+tree quiet (5s after second close commit, entry-load + boot_stress —
+the sibling-touched surface): 5 passed 31.22s / 24.10s / 22.33s (3x
+green, 05:36). FINAL_SHA (Phase 3): 8adfb7d9f5566f5c562bcf1dba50e9936ba
+58ff5 (== origin/main == ls-remote; suite/r8 tails above were taken on
+the byte-identical product tree at 7df421f/a8b9785).
+
+PHASE 3 COMPLETE (final reconcile at pushed 8adfb7d; gates green on the
 final tested commit).
