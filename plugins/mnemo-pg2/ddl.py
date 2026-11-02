@@ -389,11 +389,16 @@ def _qualify_refs(stmt: str, schema: str) -> str:
 
 
 def shared_view_statements(shared_schema: str | None = None) -> list[str]:
-    sh = shared_schema or __import__("os").environ.get(
-        "MNEMO2_SHARED_SCHEMA", "shared")
-    if not _SANDBOX_SHARED_RE.match(sh):
-        raise ValueError(f"invalid shared schema name {sh!r}")
-    return [s.replace("{SH}", sh) for s in _SHARED_VIEWS]
+    # {SELF} (view TARGET schema) = the shared schema itself: these are
+    # the self-pointing views baked INSIDE the shared schema (shared-kind
+    # Conn). Bake-into-own-schema is bake_view_statements(), which
+    # substitutes both placeholders — leaving {SELF} unreplaced here made
+    # the shared bootstrap's DO block a SyntaxError that rolled back the
+    # ENTIRE bootstrap txn (shared tables never created -> deterministic
+    # UndefinedTable, and the r8/shared tests' original failure too).
+    return bake_view_statements(shared_schema) if shared_schema \
+        else bake_view_statements(__import__("os").environ.get(
+            "MNEMO2_SHARED_SCHEMA", "shared"))
 
 
 def bake_view_statements(bake_schema: str, shared: str | None = None) -> list[str]:
