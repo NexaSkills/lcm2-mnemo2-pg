@@ -153,6 +153,63 @@ def _origin_is_ours():
 
 _ENGAGED = [0]
 
+# Cross-plugin import hygiene (qa3 N-3, the lcm2db half): if the sibling
+# mnemo-pg2 suite's conftest already prepended plugins/mnemo-pg2 to
+# sys.path (both suites sharing one pytest process), OUR OWN bare
+# sibling imports could still bind mnemo-pg2's files through the path
+# order — mnemo's connect(ddl=True) has no public-busy guard, so a stray
+# call materialises the 40 vendor tables into lcm2db.public (the F3
+# tripwire failure tessa saw in the combined suite). A meta_path finder
+# in FRONT of PathFinder wins the name race WITHOUT touching sys.path
+# (which the sibling suite owns); it answers only while an OUR-dir file
+# sits earlier in the import stack than any other project dir, so a bare
+# import from foreign code never resolves here (no hijack — the F-1
+# discipline: probe frames, not publish blindly).
+_PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_HERE))
+
+
+class _SibFinder:
+    def find_spec(self, fullname, path=None, target=None):
+        try:
+            p = _os.path.join(_HERE, fullname + ".py")
+            if not _os.path.exists(p):
+                return None
+            our_depth = for_depth = None
+            fr = _sys._getframe(1)
+            lib = _os.path.dirname(getattr(_sys, "base_prefix", ""))
+            depth = 0
+            while fr is not None and depth < 400:
+                depth += 1
+                fn = getattr(fr, "f_globals", {}).get("__file__", "")
+                if isinstance(fn, str) and fn:
+                    d = _os.path.dirname(_os.path.realpath(fn))
+                    if our_depth is None and d == _os.path.realpath(_HERE):
+                        our_depth = depth
+                    if (for_depth is None and d != _os.path.realpath(_HERE)
+                            and d.startswith(_os.path.realpath(
+                                _PROJECT_ROOT)) and d != _os.path.realpath(
+                                    _PROJECT_ROOT)):
+                        for_depth = depth
+                    elif (for_depth is None and d != _os.path.realpath(
+                            _PROJECT_ROOT)
+                            and not d.startswith(_os.path.realpath(
+                                _PROJECT_ROOT))
+                            and "/site-packages" not in d
+                            and d != lib and not d.startswith(lib + "/")):
+                        for_depth = depth  # host repo / external project
+                fr = fr.f_back
+            if our_depth is not None and (for_depth is None
+                                          or our_depth <= for_depth):
+                return _ilu.spec_from_file_location(fullname, p)
+            return None
+        except Exception:
+            return None
+
+
+if _os.path.basename(_HERE) == "lcm2-pg" and not any(
+        type(f).__name__ == "_SibFinder" for f in _sys.meta_path):
+    _sys.meta_path.insert(0, _SibFinder())
+
 
 def _engage():
     """Serve our bare sibling imports from OUR dir (file-anchored) for the
