@@ -21,7 +21,7 @@ def _this_db():
     return "lcm2db" if "lcm2db" in str(getattr(sys.modules.get("conftest"), "BASE_DSN", "")) else None
 
 
-def pytest_fixture_setup(request, tmp_path_factory):
+def pytest_fixture_setup(request):
     # Before any schema-minting fixture runs, public must be empty in BOTH
     # dbs (mnemo's shared-view bake repopulates public live otherwise).
     if request.fixturedef.argname in ("dsn", "priv_schema", "shared_schema",
