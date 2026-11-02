@@ -459,4 +459,11 @@ def install() -> None:
     _provider_dir_shim()
     lb = _latebind()
     if lb is not None:
+        # THE late-bind immunity (boot-order independent, provider
+        # lifetime): (1) frame-gated serve-only finders for our lazily
+        # imported files — any bare `import engine`/`pgconn`/... from
+        # OUR files lands on OUR files no matter what owns the bare key
+        # after register()'s byte-exact restore; (2) module-global pins
+        # for the long-lived provider/plugin-entry handlers.
+        lb.install_serve_only()
         lb.pin_engine()

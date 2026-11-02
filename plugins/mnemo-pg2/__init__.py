@@ -319,6 +319,25 @@ def register(ctx, engine_factory=None):
     # restore below make the whole swap undone at exit, exactly like the
     # '_selfimport' fix pinned via _selfimport_module().
     _si = _selfimport_module()
+    # PURGE-EXEMPT SIBLING PIN (qa3 N-3): the keys register() deliberately
+    # KEEPS after the purge (F-1b _PUBLISH_KEEP) must bind OUR files even
+    # when a foreign holder pre-owns the bare key — the in-suite poisoning
+    # case (lcm2-pg's tests import its engine/pgconn first, this
+    # register() then runs inside the same pytest process): anchor()
+    # refuses to steal the bare key, its namespaced twin would be purged
+    # at exit, and every later bare `import engine` inside our modules
+    # would silently run lcm2's file (no Engine attr, lcm2's public-busy
+    # tripwire raising on mnemo2db). anchor() publishes the package-
+    # qualified key, which _sibling() resolves first — the host's bare
+    # binding stays untouched (host hygiene invariant holds).
+    for _n in _PKG_MODULES + _PUBLISH_KEEP:
+        if _n == "_selfimport" or _n.startswith("_hermes_memory"):
+            continue  # already ours via _selfimport_module() / step 4
+        try:
+            if _sys.modules.get(_n) is not None and not _ours_bound(_n):
+                _si.anchor(_n)  # bare key foreign-owned: namespaced pin
+        except Exception:
+            pass  # a missing sibling surfaces at its real use site
     for _n in _PKG_MODULES:
         if _n == "_selfimport":
             continue  # already ours via _selfimport_module()

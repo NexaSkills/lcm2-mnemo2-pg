@@ -161,6 +161,38 @@ print(json.dumps(out))
 '''
 
 
+def _host_python() -> str:
+    """Interpreter that can import the host (hermes_cli.config ->
+    hermes_yaml -> ruamel). sys.executable when it satisfies the host's
+    own imports; else the host install's venv python under
+    ~/.hermes/installs/*/environments/*/venv (newest mtime), if importable.
+    Falls back to sys.executable so the failure message stays honest."""
+    import glob
+    import subprocess as _sp
+
+    def ok(exe):
+        try:
+            return _sp.run(
+                [exe, "-I", "-c",
+                 "import hermes_yaml, hermes_cli.config"],
+                capture_output=True, text=True, timeout=30,
+                env={**os.environ, "PYTHONPATH": str(HERMES_ROOT)}
+            ).returncode == 0
+        except Exception:
+            return False
+
+    if ok(sys.executable):
+        return sys.executable
+    cands = sorted(glob.glob(str(pathlib.Path.home() / ".hermes" / "installs"
+                                / "*" / "environments" / "*" / "venv"
+                                / "bin" / "python")),
+                   key=lambda p: os.path.getmtime(p), reverse=True)
+    for exe in cands:
+        if ok(exe):
+            return exe
+    return sys.executable
+
+
 def _run(env_extra: dict) -> dict:
     import tempfile
     home = tempfile.mkdtemp(prefix="f1home-")
@@ -171,7 +203,13 @@ def _run(env_extra: dict) -> dict:
     code = BOOT_AND_RESOLVE % {"host": str(HERMES_ROOT),
                                "init": str(MNEMO2_INIT),
                                "dir": str(MNEMO2_INIT.parent)}
-    p = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True,
+    # The contract is the HOST's loader, so the child interpreter must be
+    # the interpreter that RUNS the host. When pytest itself runs under a
+    # runner venv without the host's deps (the lcm-pg venv on this fleet
+    # lacks ruamel.yaml), sys.executable dies importing
+    # hermes_cli.config; fall back to the host install's own venv python.
+    child_python = _host_python()
+    p = subprocess.run([child_python, "-I", "-c", code], capture_output=True,
                        text=True, timeout=180, env=env)
     tail = [ln for ln in p.stdout.splitlines() if ln.startswith("{")]
     if not tail:

@@ -79,3 +79,19 @@ def register_memory_provider(ctx):
 
 def register(ctx):
     register_memory_provider(ctx)
+    # F-1 boot-order immunity: directory discovery may resolve the slot
+    # BEFORE the general lane imports plugins/mnemo-pg2 (and even if it
+    # imported it, register() may not have run). The provider object is
+    # long-lived and its dispatch reaches engine.py, whose bare
+    # `import pgconn` resolves at CONNECT time with no of-dir frames in
+    # the chain — every late window must see OUR bindings. install()
+    # already pinned once; re-pin here so the pin's provenance is
+    # boot-order-independent (idempotent: setattrs to identity).
+    try:
+        mp = sys.modules.get("hermes_plugins.mnemo_pg2.memory_provider") \
+            or _published()
+        lb = getattr(mp, "_latebind", None) if mp is not None else None
+        if lb is not None:
+            lb()  # noqa: re-resolve latebind (in-memory pkg or by file)
+    except Exception:
+        pass
