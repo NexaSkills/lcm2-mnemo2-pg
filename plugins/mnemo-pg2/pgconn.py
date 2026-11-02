@@ -130,15 +130,9 @@ class Conn:
         self.kind = kind
         self._ddl_mod = ddl_mod
         self._want_ddl = ddl
-        # R8 (P3STEP4): cross-agent view re-bake is opt-in per Conn and
-        # defaults OFF: _own_ddl already bakes the env-resolved views
-        # INSIDE the advisory lock at bootstrap. __enter__ re-bakes ONLY
-        # when this Conn was told to (bootstrap() / explicit views=True)
-        # and the target differs from the env-resolved shared schema.
-        self._want_views = False
         # cross-agent view re-bake flag (set true when DDL is wanted;
         # consumed once per connection in __enter__, same lifecycle as
-        # _want_ddl — sibling r8 fix: the flag must always exist).
+        # _want_ddl — r8: the flag must always exist).
         self._want_views = bool(ddl)
         self._pool = _get_pool(self.dsn)
         self._cx = None
@@ -227,16 +221,21 @@ class Conn:
             if _d is None or getattr(_d, "shared_view_statements", None) is None:
                 self._own_ddl()  # binds _mnemo2_impl_ddl by file
                 _d = sys.modules["_mnemo2_impl_ddl"]
-            env_shared = os.environ.get("MNEMO2_SHARED_SCHEMA", "shared")
+            # baked by _own_ddl under the value of MNEMO2_SHARED_SCHEMA
+            # AT CONNECT TIME (env is global and threads rewrite it —
+            # read it at __enter__, never here). Re-bake only when the
+            # bake's target differs from what we want NOW.
+            env_shared = getattr(self, "_conn_env_shared", None)
+            want = shared_schema()
             try:
-                if self.schema != env_shared:
+                if want != env_shared:
                     # different shared target than _own_ddl baked: bake
                     # OUR views under the lock too
                     self._cx.execute(
                         "SELECT pg_catalog.pg_advisory_xact_lock("
                         "hashtext(%s)::bigint, pg_catalog.hashtext(%s)::bigint)",
                         (self.dsn, self.dbname))
-                    for stmt in _d.shared_view_statements(env_shared):
+                    for stmt in _d.shared_view_statements(want):
                         self._cx.execute(stmt)
                 self._cx.commit()
             except Exception:
