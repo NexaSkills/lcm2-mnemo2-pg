@@ -26,13 +26,14 @@ if _sys_ddl is not _plugin_ddl:
 
 SOCKET = os.environ.get(
     "LCM2_PG_HOST", os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
+PORT = os.environ.get("LCM2_PG_PORT", "54331")  # fix7c: instance split (bind via env only)
 DB = "lcm2db"
 SIBLING_DB = "mnemo2db"  # N-3 (qa4): combined runs let the SIBLING suite's
 # lcm2-flavoured fixtures bootstrap the lcm2 engine against mnemo2db, whose
 # public holds vendor-era residue — pgconn's public-busy guard then kills
 # every lcm2 schema fixture there. The sweep below therefore empties public
 # in BOTH databases of this instance, whichever conftest gets there first.
-BASE_DSN = f"dbname={DB} host={SOCKET} port=54331 user=mnemo201"
+BASE_DSN = f"dbname={DB} host={SOCKET} port={PORT} user=mnemo201"
 
 # Pin the plugin's default DSN + disable the summary model for determinism
 # (tests that specifically test DSN resolution reset this).
@@ -47,7 +48,7 @@ def dsn():
         with pgconn.connect(BASE_DSN, "public") as cx:
             assert cx.query_scalar("select 1") == 1
     except Exception as e:
-        pytest.fail(f"lcm2 instance unreachable at {SOCKET}:54331 db={DB}: {e}"
+        pytest.fail(f"lcm2 instance unreachable at {SOCKET}{PORT} db={DB}: {e}"
                     " (start scripts/ensure_instance.sh; never falls back, R3)")
     # Sweep throwaway schemas LEFT BY PREVIOUS runs before this one mints
     # its own. WHY: the `schema` fixture DROPs in teardown — a run killed
@@ -82,7 +83,7 @@ def dsn():
     # enough at rest: public views are dropped too (a stale view is exactly
     # what re-exposes base tables through the bake).
     for _db in (DB, SIBLING_DB):
-        _dsn = f"dbname={_db} host={SOCKET} port=54331 user=mnemo201"
+        _dsn = f"dbname={_db} host={SOCKET} port={PORT} user=mnemo201"
         with pgconn.connect(_dsn, "public") as cx:
             # (view/matview/foreign first, tables after: a view cannot drop
             # after its base table vanished — CASCADE covers the reverse)
