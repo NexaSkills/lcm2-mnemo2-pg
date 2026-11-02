@@ -82,3 +82,23 @@ remaining failure is the one above.
 - Full suite: 18 passed, 1 failed (test_concurrent_shared_surface).
 - r8 test 3x: 1 failed / 2 failed / 1 failed variants (never 3x green).
 - porcelain: 0 after close commit.
+
+## ADDENDUM (02:30 SAST) — advisory-overload fix landed (28583c1)
+- Confirmed LIVE on mnemo2db: pg_advisory_xact_lock(bigint,bigint) =>
+  UndefinedFunction (pg_proc 18.6: (bigint) and (int,int) overloads only).
+  The 7f88ee2/92d138d serialization NEVER took a lock; the except:rollback
+  in __enter__ hid it. Fixed: single-key
+  pg_advisory_xact_lock(hashtext(dsn || 0x1f || dbname)::bigint).
+- Post-fix r8 solo rerun: failure CHANGED character —
+  UniqueViolation pg_type_typname_nsp_index => UndefinedTable
+  "shared_test_x".working_memory does not exist on the surface INSERT
+  (shared schema's tables never created for the Conn's target). Shared-
+  kind bootstrap is now skipping/failing its CREATEs — suspect the
+  sibling lane's ddl.py _qualify_refs/bake_view_statements restructure
+  (14c7d95) interacting with kind='shared' self_schema, OR an extension
+  pre-step now serialized differently. This is closer (fail-closed,
+  deterministic, no catalog corruption), and the next diagnosis is short:
+  run one shared-kind bootstrap alone and diff its CREATE list against
+  ddl.statements('shared', schema).
+- Commit state: 28583c1 pushed-ready; porcelain 0. NO 'PHASE 3 COMPLETE'
+  (suite not fully green at close).
