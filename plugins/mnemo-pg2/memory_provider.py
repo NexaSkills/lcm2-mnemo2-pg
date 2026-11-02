@@ -445,7 +445,15 @@ def _latebind():
         try:
             spec.loader.exec_module(m)
         finally:
-            sys.modules.pop(spec.name, None)
+            # keep it under a namespaced OURS key (the module attribute
+            # on it is read later; register()'s purge may drop the key,
+            # the object survives) — popping blind left _latebind
+            # returning a never-executed stub when the key pre-existed.
+            sys.modules.setdefault("_mnemo2_impl_latebind_pinned", m)
+            if sys.modules.get(spec.name) is m:
+                sys.modules.pop(spec.name, None)
+        if not hasattr(m, "pin_engine"):  # dead stub (shouldn't happen)
+            return None
         return m
 
 
