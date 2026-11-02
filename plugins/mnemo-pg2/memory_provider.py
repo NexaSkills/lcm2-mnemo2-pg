@@ -460,10 +460,35 @@ def install() -> None:
     lb = _latebind()
     if lb is not None:
         # THE late-bind immunity (boot-order independent, provider
-        # lifetime): (1) frame-gated serve-only finders for our lazily
-        # imported files — any bare `import engine`/`pgconn`/... from
-        # OUR files lands on OUR files no matter what owns the bare key
-        # after register()'s byte-exact restore; (2) module-global pins
-        # for the long-lived provider/plugin-entry handlers.
+        # lifetime): (1) anchor OUR late-imported files + front-load
+        # OUR sibling finder, so bare imports from our files land on
+        # our files even outside register()'s window; (2) pin the
+        # module-globals (setattr on OUR modules only); (3) heal-wrap
+        # the public entries so every later host call re-asserts the
+        # pins on ITS OWN module copy (a rival plugin's loader that
+        # anchored our file under a shared key outside our windows
+        # cannot strand a foreign module-global).
         lb.install_serve_only()
         lb.pin_engine()
+    _hw = None
+    try:
+        from . import healwrap as _hw  # package-qualified, no bare key
+    except Exception:  # no package parent (by-file lane)
+        import importlib.util as _ilu
+        _sp = _ilu.spec_from_file_location(
+            "_mnemo2_impl_healwrap_file",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "healwrap.py"))
+        if _sp is not None and _sp.loader is not None:
+            _m = _ilu.module_from_spec(_sp)
+            sys.modules["_mnemo2_impl_healwrap_file"] = _m
+            try:
+                _sp.loader.exec_module(_m)
+                _hw = _m
+            except Exception:
+                _hw = None
+    if _hw is not None:
+        try:
+            _hw.heal()
+        except Exception:
+            pass

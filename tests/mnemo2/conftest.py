@@ -24,6 +24,10 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PLUGIN_DIR = str(REPO / "plugins" / "mnemo-pg2")
 sys.path.insert(0, PLUGIN_DIR)
+# N-3 (qa3): shared-process runs must not let lcm2's conftest path-pin
+# (it inserts ITS dir at sys.path[0]) answer our bare imports. Symmetric,
+# path-order-only immunity — no sys.modules/meta_path edits.
+import _suite_imports  # noqa: F401,E402  (import side effect is the fix)
 
 # N-3 (qa3): suite order is randomized; if lcm2's own tests import first,
 # the bare module keys ('pgconn', 'ddl', ...) stay bound to lcm2-pg's
