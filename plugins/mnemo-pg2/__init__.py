@@ -178,31 +178,51 @@ def _load_bridge():
     """context_engine_shim.py by FILE (namespaced; publishes no bare name).
 
     Phase-3 (spec §3): mnemo-pg2 is a MEMORY plugin — no context-engine
-    bridge file ships in this dir (that is lcm2-pg's route). If the
-    shared key is already present it must ALSO carry our bridge class,
-    else it belongs to another plugin (lcm2-pg loaded first in the same
-    interpreter): we drop the stale shared key, re-load OUR shim file,
-    and restore the foreign module afterwards so the other plugin keeps
-    its binding (phase-2 import discipline: never leave a foreign-owned
-    bare/bridge key modified). Absent file or absent class -> None: the
-    general register() route works standalone either way.
+    bridge class ships in this dir (that is lcm2-pg's route; our shim
+    file is an inert marker by design).
+
+    T-1 FIX (FIX9 family): our inert marker file must NEVER be bound
+    under the SHARED key '_lcm2_pg_bridge.context_engine_shim'. The old
+    code wrote it there whenever the key lacked our (deliberately absent)
+    class — which is ALWAYS true for a foreign-owned key — so loading us
+    before lcm2-pg silently CLOBBERED lcm2-pg's bridge binding with an
+    attribute-free module. lcm2-pg's module-time bridge load then found
+    the clobbered key and died: "module '_lcm2_pg_bridge.context_engine_shim'
+    has no attribute 'LCM2PgContextEngine'" ('Failed to load plugin
+    lcm2-pg' at gateway boot). Discipline now: probe OUR file under OUR
+    OWN namespaced key; touch the shared key only when we own it (it
+    already carries our class), restoring the foreign binding untouched.
+    Absent class -> None: the general register() route works standalone
+    either way.
     """
     full = "_lcm2_pg_bridge.context_engine_shim"
     foreign = _sys.modules.get(full)
     if foreign is not None and hasattr(foreign, _BRIDGE_CLASS):
-        return foreign
+        return foreign  # key is OURS: nothing to do
     spec = _ilu.spec_from_file_location(
-        full, _os.path.join(_HERE, "context_engine_shim.py"))
+        "_mnemo2_impl_ce_marker", _os.path.join(_HERE, "context_engine_shim.py"))
     if spec is None or spec.loader is None:  # pragma: no cover
         raise ImportError(f"mnemo-pg2: context_engine_shim.py missing in {_HERE}")
     mod = _ilu.module_from_spec(spec)
-    _sys.modules[full] = mod
+    _sys.modules[spec.name] = mod
     _disarm = _engage()
     try:
         spec.loader.exec_module(mod)
     finally:
         _disarm()
-    return mod
+        _sys.modules.pop(spec.name, None)
+    if hasattr(mod, _BRIDGE_CLASS):
+        # Our file DOES carry the class (future change): publish it under
+        # the shared key only if the key is absent or already ours — a
+        # foreign binding is never overwritten.
+        cur = _sys.modules.get(full)
+        if cur is None or getattr(cur, _BRIDGE_CLASS, None) is getattr(mod, _BRIDGE_CLASS, None):
+            _sys.modules[full] = mod
+        return mod
+    # OUR marker file has NO bridge class (by design). Leave the shared
+    # key exactly as we found it (lcm2-pg's bridge, or the host's, or
+    # absent): foreign bindings are never clobbered.
+    return foreign
 
 
 def _load_bridge_quietly():
