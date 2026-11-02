@@ -201,3 +201,40 @@ alone never survived the pgconn fix.
   collection error, pre-existing, unrelated to code).
 
 PHASE 3 COMPLETE (suite green per-directory, both target tests 3x green).
+
+## P3END close block (token LCM2-MNEMO2-P3END)
+
+### Decision (WORK step 2, documented call)
+FINISH, not revert. The env-bind work was structurally complete at
+5c4e568 (dispatch-bind in plugin_entry + envbind.py). Evidence it
+discriminates, taken on the final tree:
+- old-path control (e8a8876 dispatch semantics replayed, rival env
+  live): in A=0, MISPLACED in B=24/24 — silent misplacement, the r8 bug.
+- new-path proof (scratch/gate_envbind_proof.py, 5x): in A=24/24,
+  MISPLACED in B=0 — dispatch-bind holds under rival ambient env.
+
+### CONCURRENT-LANE INCIDENT (serialization claim was false)
+While this lane ran, an unidentified third writer actively edited
+plugins/mnemo-pg2/{plugin_entry,envbind,pgconn}.py in the shared
+checkout (03:41–04:00; interim states did not import — e.g. pgconn
+calling envbind.eff()/envbind._envstr with no such defs, 6-fail fast
+suite runs). The P3-QA lane dispatch (pid 3169772, 03:40) says it does
+not modify product. I did NOT fight the lane: my step-1 commit 5c4e568
+snapshotted the then-current files; when one transient edit broke
+imports I restored the pgconn half from 8907831 mid-flight. The
+external writer's edits then converged and its state landed, cleanly,
+inside my WIP-snapshot commit 8907831 (tree == remote, porcelain 0).
+If the D row is defined as env-bind work committed & pushed: D row
+done at 8907831.
+
+### Gate on final pushed commit 8907831 (pycache+cache-provider cleared)
+full suite tests/mnemo2:
+  19 passed in 12.76s / 19 passed in 12.41s / 19 passed in 12.02s
+r8 (test_r8_concurrency + test_r8_ddl_serialization):
+  5 passed in 1.02s / 5 passed in 1.18s / 5 passed in 1.20s
+D row: env-bind work committed+pushed at 8907831 (see incident note).
+R5 cross-agent proof: cited at 6f423e3 (shared row sf_9f57d26e15e54eff),
+re-confirmed green this run via test_shared_cross_agent in-suite 3x.
+porcelain 0; origin/main == 8907831fe4514966b4e5774b628682cb6a65ca9d.
+
+PHASE 3 COMPLETE
