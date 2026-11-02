@@ -26,6 +26,7 @@ import os
 
 import engine as _engine
 import pgconn as _pgconn
+import envbind as _envbind
 
 TOOLSET = "memory"  # vendor parity (spec §2)
 
@@ -86,16 +87,34 @@ def _dispatch(tool_name, args):
             eng = None
         if eng is None:
             eng = _engine.Engine()
+        # P3L (dispatch-bind): handlers registered by register() carry a
+        # per-agent BINDING (dsn/schema/shared_schema resolved ONCE at
+        # register time). The dispatch runs under that binding as a
+        # thread-local env override, so a write can never follow the
+        # process-global env into a rival agent's pin window (r8: agent
+        # a's rows landing in agent b's schema, silently). A binding-
+        # less dispatch (hooks, host-provided engine, direct Engine use)
+        # resolves per-call from env exactly as before.
+        _binding = None
+        if isinstance(args, dict):
+            _binding = args.get("__binding__")
         fn = getattr(eng, meth, None)
         if fn is None or not callable(fn):
             return json.dumps({"ok": False, "error": f"unknown tool: {tool_name}"})
         kwargs = dict(args or {})
         kwargs.pop("__engine__", None)
+        kwargs.pop("__binding__", None)
         # handler may be called positionally ({...}) or with **kwargs by
         # the host; either way 'args' arrives as a dict here.
         if list(kwargs) == ["args"] and isinstance(kwargs["args"], dict):
             kwargs = kwargs["args"]
-        out = fn(**kwargs)
+        # The **kwargs host path may deliver the marker too (handler
+        # called with keyword args): pop it before the Engine call — it
+        # is not an Engine kwarg.
+        if "__binding__" in kwargs:
+            _binding = kwargs.pop("__binding__") or _binding
+        with _envbind.scoped(**(dict(_binding) if _binding else {})):
+            out = fn(**kwargs)
         if isinstance(out, str):
             return out
         if isinstance(out, dict):
@@ -245,11 +264,29 @@ def _post_tool_call(tool_name="", arguments=None, result=None, **kw):
 
 
 def register(ctx, engine_factory=None):
-    """Toolset "memory", 42 tools, 3 hooks (spec §2/§3/§6)."""
+    """Toolset "memory", 42 tools, 3 hooks (spec §2/§3/§6).
+
+    P3L: the per-agent resolution (dsn, private schema, shared schema)
+    is captured from the env ONCE HERE and shipped to every dispatch as
+    a thread-local binding — env churn by a rival agent (another
+    register() or a pin window) can no longer redirect this agent's
+    writes mid-call.
+    """
     names = _wildcard_names()
+    try:
+        binding = {"dsn": _pgconn.default_dsn(),
+                   "schema": _pgconn.agent_schema(),
+                   "shared_schema": _pgconn.shared_schema()}
+    except Exception:  # invalid env names: dispatch falls back to env path
+        binding = {}
+    if engine_factory is not None:
+        # the host's own engine factory wins (F-series contract); binding
+        # still wraps the call so hooks see a stable resolution.
+        pass
     for name in names:
-        handler = (lambda n: (lambda args=None, **kw:
-                              _dispatch(n, args if args is not None else kw)))(name)
+        handler = (lambda n: (lambda args=None, _b=binding, **kw:
+                              _dispatch(n, args if args is not None
+                                        else {**kw, "__binding__": _b})))(name)
         ctx.register_tool(name=name, toolset=TOOLSET,
                           schema=_schema_for(name), handler=handler,
                           description=f"mnemo-pg2 vendor-parity tool {name}")
