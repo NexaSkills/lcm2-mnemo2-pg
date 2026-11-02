@@ -325,3 +325,53 @@ byte-identical to 08a5270/d57531e except result-file appendices):
 
 PHASE 3 COMPLETE (verified at d1b271b by the FIX2 lane, token
 LCM2-MNEMO2-P3-FIX2)
+
+## P3RECON final reconcile close block (token LCM2-MNEMO2-P3RECON, 05:2x SAST)
+Dispatch premise checked against the live system before touching
+anything: the "4 uncommitted edits (D envbind.py, M pgconn.py,
+M plugin_entry.py, M test_r8_concurrency.py), no lane alive" snapshot
+from the 04:20 amendment had ALREADY been reconciled and pushed by the
+P3-FIX lanes between 04:14 and 05:12. No revert and no new product
+commit needed — step 1's branch resolves to "the edits are part of the
+green state, committed & pushed", so FINAL SHA = current tip.
+
+FINAL_SHA: 7df421f53de9771468042d6a9d26c5f7fe4b5f54 (origin/main ==
+local == ls-remote; product tree == d57531e lineage; commits after
+d57531e are result-file/p3end.addendum.md appendices only —
+git diff e0efc5e..7df421f -- plugins/ tests/ covers exactly the 4
+amendment files: envbind.py deleted, pgconn.py and plugin_entry.py
+rewritten for the self-contained binding cell,
+test_r8_concurrency.py +6).
+
+Reconciliation statement: envbind.py removed from product; per-agent env
+binding self-contained in plugin_entry._envbind_ctx; pgconn reads the
+binding cell by sys.modules key; both load paths pinned by
+tests/mnemo2/test_p3fix_entry_load.py (rides d57531e). No working-tree
+residue: porcelain 0 at inspection 05:22; git checkout/clean
+unnecessary — the tree was already quiet.
+
+Gate on THIS exact pushed SHA 7df421f (pycache+pytest_cache cleared,
+quiet tree, 05:22–05:26 SAST):
+  pytest tests/mnemo2 -q (full suite x3):
+    23 passed, 1 warning in 12.62s / 23 passed in 12.82s / 23 passed in 13.12s
+  r8 pair (test_r8_concurrency + test_r8_ddl_serialization) x3:
+    5 passed, 1 warning in 1.02s / 5 passed in 0.98s / 5 passed in 0.89s
+  tests/lcm2 -q x3 (per P3PIN note, per-directory is the valid command;
+  lcm2 was untouched since 6f423e3): 65 passed in 77.65s / 65 passed in
+  68.90s / 65 passed in 69.03s
+R5 cross-agent proof stands as cited: shared row sf_9f57d26e15e54eff
+@01:42:42+02, re-confirmed green in-suite via test_shared_cross_agent in
+each suite run above.
+
+F1 (artifact source-of-truth): this fleet copy
+/home/mybuddy/fleet/reports/lcm2-mnemo2-redesign.phase3.result.md is
+authoritative and carries every close block (P3L2/P3END/FIX2 above);
+the repo copy phase3.result.md is kept synced by identical content —
+this block was appended to the repo copy first, then cp'd verbatim to
+the fleet path (cmp IDENTICAL at close).
+
+porcelain 0 proof: `git status --porcelain | wc -l` == 0;
+`git ls-remote origin main` == 7df421f53de9771468042d6a9d26c5f7fe4b5f54.
+
+PHASE 3 COMPLETE (final reconcile at pushed 7df421f; gates green on the
+final tested commit).
