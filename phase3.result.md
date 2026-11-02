@@ -270,3 +270,18 @@ H-4 closed: this file cp'd verbatim to
 (identical by diff). git ls-remote origin main == d57531e.
 
 PHASE 3 COMPLETE
+
+### P3END reconciliation addendum (same dispatch, 04:18)
+Correction to the block above: the plugin_entry change observed at
+04:03 was NOT random churn — it was manny's FIX1 fix-branch (pids
+03:59/04:07, tokens P3-FIX1/FIX2), so the serialization claim against
+THAT lane was stale, and the P3-FIX lane owns the envbind loose end
+(FIX2 at d57531e removes envbind.py from the product: binding is
+self-contained in plugin_entry._envbind_ctx, pgconn reads the binding
+cell via sys.modules key; new test_p3fix_entry_load.py covers both
+load paths). This lane's commits stand as the WIP-authorization trail
+(5c4e568 -> 8907831 snapshot -> e0efc5e close block).
+Gate re-verified on FINAL tip d57531e (porcelain 0, pycache cleared):
+  full suite: 23 passed x3 (13.56s / 12.83s / 13.08s)
+  r8 files:   5 passed x3 (1.04s / 1.39s / 1.13s)
+PHASE 3 COMPLETE (gate re-confirmed on d57531e by the P3END lane).
