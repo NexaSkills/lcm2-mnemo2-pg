@@ -49,28 +49,69 @@ def _ours_bound(name):
 
 def _pin(name):
     """Bind the bare key to OUR file (namespaced twin first; publish bare
-    only across the window we manage)."""
+    only across the window we manage).
+
+    F-1 discipline: the twin is executed with our _selfimport.anchor()
+    route (per-exec import window, no global sys.path edit) when the
+    package's machinery is importable; plain spec-exec is the fallback
+    for a bare-checkout run where no package __init__ exists. A plain
+    spec-exec WITHOUT the window is what let a pinned module's own
+    `import pgconn` escape to the sibling's file via a stale sys.path
+    entry (r8 cross-schema dups)."""
     twin = "_lcm2_pin." + name
     mod = _sys.modules.get(twin)
     if mod is None or not _ours_bound_key(twin):
-        import importlib.util as _ilu
         path = _os.path.join(_OUR_PLUGIN, name + ".py")
         if not _os.path.isfile(path):
             return None
-        spec = _ilu.spec_from_file_location(twin, path)
-        if spec is None or spec.loader is None:
-            return None
-        mod = _ilu.module_from_spec(spec)
-        _sys.modules[twin] = mod
+        mod = None
+        anchor = None
+        # route 1: lcm2-pg's own anchor (import-windowed sibling binds)
         try:
-            spec.loader.exec_module(mod)
-        except BaseException:
-            _sys.modules.pop(twin, None)
-            raise
+            pkg_init = _os.path.join(_OUR_PLUGIN, "__init__.py")
+            if _os.path.isfile(pkg_init):
+                import importlib.util as _ilu
+                spec = _ilu.spec_from_file_location("_lcm2_pkg", pkg_init)
+                if spec and spec.loader:
+                    pkg = _ilu.module_from_spec(spec)
+                    _sys.modules.setdefault("_lcm2_pkg", pkg)
+                    spec.loader.exec_module(pkg)
+                    anchor = getattr(pkg, "_anchor", None)
+        except Exception:
+            anchor = None
+        if callable(anchor):
+            try:
+                target = anchor(name)
+                if _dir_is_ours(getattr(target, "__file__", "")):
+                    mod = target
+            except Exception:
+                mod = None
+        if mod is None:  # route 2: namespaced by-file exec (standalone)
+            import importlib.util as _ilu
+            spec = _ilu.spec_from_file_location(twin, path)
+            if spec is None or spec.loader is None:
+                return None
+            mod = _ilu.module_from_spec(spec)
+            _sys.modules[twin] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except BaseException:
+                _sys.modules.pop(twin, None)
+                raise
     if name not in _saved:
         _saved[name] = _sys.modules.get(name)
     _sys.modules[name] = mod
     return mod
+
+
+def _dir_is_ours(f):
+    if not isinstance(f, str):
+        return False
+    try:
+        return _os.path.dirname(_os.path.realpath(f)) == _os.path.realpath(
+            _OUR_PLUGIN)
+    except Exception:
+        return False
 
 
 def _ours_bound_key(name):
