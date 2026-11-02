@@ -11,7 +11,8 @@ sys.path.insert(0, str(pathlib.Path.home() / "lcm2-mnemo2-pg" / "plugins" / "lcm
 import pgconn
 
 PSQL = str(pathlib.Path.home() / "lcm-pg" / "pg" / "bin" / "psql")
-HOST = str(pathlib.Path.home() / "lcm2-mnemo2-pg" / "pg" / "run")
+HOST = os.environ.get("LCM2_PG_HOST") or str(
+    pathlib.Path.home() / "lcm2-mnemo2-pg" / "pg" / "run")  # fix7c split
 PORT = os.environ.get("LCM2_PG_PORT", "54331")  # fix7c: instance split (env bind)
 DSN = f"dbname=lcm2db host={HOST} port={PORT} user=mnemo201"
 RUN = os.environ.get("LCM2_R8_RUN") or uuid.uuid4().hex[:12]

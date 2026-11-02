@@ -7,10 +7,11 @@
 # maintenance script, human psql) that reintroduces public relations.
 PSQL=$(command -v psql || echo /home/linuxbrew/.linuxbrew/Cellar/postgresql@17/17.10/bin/psql)
 [ -x "$PSQL" ] || { echo "$(date -Is) SKIP: no psql"; exit 0; }
-HOST="$HOME/lcm2-mnemo2-pg/pg/run"
+HOST="${LCM2_PG_HOST:-$HOME/lcm2-mnemo2-pg/pg/run}"  # fix7c split (env bind)
+PORT="${LCM2_PG_PORT:-54331}"
 fail=0
 for DB in lcm2db mnemo2db; do
-  DSN="postgresql:///$DB?host=$HOST&port=54331&user=mnemo201"
+  DSN="postgresql:///$DB?host=$HOST&port=$PORT&user=mnemo201"
   n=$("$PSQL" "$DSN" -At -v ON_ERROR_STOP=1 -c \
     "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
        where n.nspname='public'
