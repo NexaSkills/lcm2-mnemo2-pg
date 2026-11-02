@@ -55,10 +55,10 @@ def test_no_sqlite_module_importable_by_accident(dsn, priv_schema):
     """After a registered tool call runs, sqlite3 must NOT have been pulled
     into sys.modules by OUR package (host modules may legitimately have it)."""
     import sys
-    from conftest import register_plugin
+    import tests.mnemo2.conftest as _c  # qualified: never the sibling suite's conftest
     sys.modules.pop("sqlite3", None)
     sys.modules.pop("sqlite3.dbm", None)
-    mod, ctx = register_plugin(dsn, priv=priv_schema)
+    mod, ctx = _c.register_plugin(dsn, priv=priv_schema)
     if "mnemosyne_stats" in ctx.tools:
         ctx.tools["mnemosyne_stats"]["handler"]({})
     # if sqlite3 is present it must not trace to our dir
@@ -72,12 +72,12 @@ def test_forced_pg_error_surfaces_no_fallback(dsn, priv_schema):
     """Point a tool at a DEAD dsn (bad port): the error surfaces as a
     tool-shaped error, never a silent embedded fallback."""
     import os
-    from conftest import register_plugin
+    import tests.mnemo2.conftest as _c  # qualified: never the sibling suite's conftest
     bad = "dbname=mnemo2db host=/nonexistent-socket port=59999 user=mnemo201"
     keep = os.environ.get("MNEMO2_PG_DSN")
     os.environ["MNEMO2_PG_DSN"] = bad
     try:
-        mod, ctx = register_plugin(bad, priv=priv_schema)
+        mod, ctx = _c.register_plugin(bad, priv=priv_schema)
         res = ctx.tools["mnemosyne_stats"]["handler"]({})
         # either an error dict or a raised exception is fine; a stats
         # payload sourced from an embedded DB is NOT.
