@@ -27,6 +27,11 @@ if _sys_ddl is not _plugin_ddl:
 SOCKET = os.environ.get(
     "LCM2_PG_HOST", os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
 DB = "lcm2db"
+SIBLING_DB = "mnemo2db"  # N-3 (qa4): combined runs let the SIBLING suite's
+# lcm2-flavoured fixtures bootstrap the lcm2 engine against mnemo2db, whose
+# public holds vendor-era residue — pgconn's public-busy guard then kills
+# every lcm2 schema fixture there. The sweep below therefore empties public
+# in BOTH databases of this instance, whichever conftest gets there first.
 BASE_DSN = f"dbname={DB} host={SOCKET} port=54331 user=mnemo201"
 
 # Pin the plugin's default DSN + disable the summary model for determinism

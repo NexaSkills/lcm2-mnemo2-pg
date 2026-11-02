@@ -87,6 +87,12 @@ def _proxy(name, ours):
     __spec__ keep pointing at our file for origin checks."""
     import types as _t
     prox = _t.ModuleType(name)
+    # __name__ MUST stay the original: the host's registry tags derived
+    # handlers with _module_key(handler.__module__ + '.' + func.__name__)
+    # (hermes-cli tools/registry._derived_module_key), so a renamed proxy
+    # module would HIDE every derived tool behind an unknown-module check
+    # (qa5: 40 lcm_* derived tools vanished when mnemo2's suite ran first).
+    prox.__name__ = name
     prox.__dict__["__getattr__"] = lambda attr, _o=ours: getattr(_o, attr)
     prox.__file__ = getattr(ours, "__file__", None)
     prox.__spec__ = getattr(ours, "__spec__", None)
