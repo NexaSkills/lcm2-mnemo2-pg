@@ -20,7 +20,8 @@ What it does (idempotent):
 import sys
 import psycopg
 
-BASE = "host=/home/mybuddy/lcm2-mnemo2-pg/pg/run port=54331 user=mnemo201 dbname="
+import os
+BASE = "host=" + os.environ.get("LCM2_PG_HOST", "/home/mybuddy/lcm2-mnemo2-pg/pg/run") + " port=" + os.environ.get("LCM2_PG_PORT", "54331") + " user=mnemo201 dbname="
 
 SCHEMAS = [("mnemo2db", "mnemo2_qa4probe"), ("mnemo2db", "mnemo2_qa4glob"),
            ("mnemo2db", "mnemo2_qa4def"), ("lcm2db", "lcm2_qa4probe"),
