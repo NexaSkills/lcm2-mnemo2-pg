@@ -356,10 +356,17 @@ _SHARED_EXCLUDE = {
 # through fixed view names in THEIR OWN schema, so one read path serves both
 # banks. Views (not tables): DROP SCHEMA shared CASCADE can never orphan a
 # private schema (the view just errors until the next ensure — YAGNI-safe).
+# Target name FULLY QUALIFIED to the bake schema: a bare CREATE VIEW
+# resolves its target through search_path — under pg_catalog-pinned
+# paths (the CREATE TABLE batch in pgconn._own_ddl) it would fail or
+# land in the wrong schema. Qualified = deterministic everywhere.
+# {SELF} is substituted by shared_view_statements()/bake_view_statements()
+# ONLY (string replace, never psycopg %s interpolation — these run inside
+# a DO $$ block where a stray '%' is a syntax error).
 _SHARED_VIEWS = [
-    "DO $$ BEGIN IF to_regclass('{SH}.working_memory') IS NOT NULL THEN CREATE OR REPLACE VIEW shared_memory AS SELECT * FROM {SH}.working_memory; END IF; END $$",
-    "DO $$ BEGIN IF to_regclass('{SH}.memory_embeddings') IS NOT NULL THEN CREATE OR REPLACE VIEW shared_embeddings AS SELECT * FROM {SH}.memory_embeddings; END IF; END $$",
-    "DO $$ BEGIN IF to_regclass('{SH}.canonical_facts') IS NOT NULL THEN CREATE OR REPLACE VIEW shared_canonical AS SELECT * FROM {SH}.canonical_facts; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.working_memory') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_memory AS SELECT * FROM {SH}.working_memory; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.memory_embeddings') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_embeddings AS SELECT * FROM {SH}.memory_embeddings; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.canonical_facts') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_canonical AS SELECT * FROM {SH}.canonical_facts; END IF; END $$",
 ]
 
 _SANDBOX_SHARED_RE = __import__("re").compile(r"^[a-z0-9_]+$")
@@ -387,6 +394,19 @@ def shared_view_statements(shared_schema: str | None = None) -> list[str]:
     if not _SANDBOX_SHARED_RE.match(sh):
         raise ValueError(f"invalid shared schema name {sh!r}")
     return [s.replace("{SH}", sh) for s in _SHARED_VIEWS]
+
+
+def bake_view_statements(bake_schema: str, shared: str | None = None) -> list[str]:
+    """Views baked INTO `bake_schema` pointing at `shared` (env default).
+    Both names validated; targets fully qualified (search_path-proof)."""
+    for name, sh in ((bake_schema, shared),):
+        if not _SANDBOX_SHARED_RE.match(name):
+            raise ValueError(f"invalid schema name {name!r}")
+    sh = shared or __import__("os").environ.get("MNEMO2_SHARED_SCHEMA", "shared")
+    if not _SANDBOX_SHARED_RE.match(sh):
+        raise ValueError(f"invalid shared schema name {sh!r}")
+    return [s.replace("{SH}", sh).replace("{SELF}", bake_schema)
+            for s in _SHARED_VIEWS]
 
 
 def statements(kind: str = "private",
@@ -453,9 +473,7 @@ def statements(kind: str = "private",
         # schema's namespace; the later real CREATE then collided on
         # pg_type_typname_nsp_index (the r8 surface-write race). The
         # private views belong in the private schema = self_schema.
-        sql += [s.replace(
-            "CREATE OR REPLACE VIEW ", f'CREATE OR REPLACE VIEW "{self_schema}".', 1)
-            for s in shared_view_statements()]
+        sql += bake_view_statements(self_schema)
     return sql
 
 

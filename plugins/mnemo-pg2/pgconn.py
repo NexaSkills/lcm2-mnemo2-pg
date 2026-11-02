@@ -195,10 +195,18 @@ class Conn:
                 # per-db second key gave each database its own lock
                 # space, so two same-DSN sessions in different databases
                 # bootstrapped CONCURRENTLY onto the global pg_type.
+                # CRITICAL (P3X close-out): this instance (PG 18.6) has
+                # NO pg_advisory_xact_lock(bigint,bigint) overload (only
+                # (bigint) and (int,int) — verified live on mnemo2db:
+                # pg_proc lists 1-arg bigint and 2-arg int forms only).
+                # The two-::bigint call below raised UndefinedFunction,
+                # the except swallowed it, and NO lock was ever taken —
+                # the 7f88ee2/92d138d serialization was a silent no-op
+                # (the true root cause of the r8 DDL race). Single-key
+                # overload, key = hash(dsn || 0x1f || dbname).
                 self._cx.execute(
                     "SELECT pg_catalog.pg_advisory_xact_lock("
-                    "hashtext(%s)::bigint, "
-                    "pg_catalog.hashtext(%s)::bigint)",
+                    "pg_catalog.hashtext(%s || x'1f'::text || %s)::bigint)",
                     (self.dsn, self.dbname))
             except Exception:
                 self._cx.rollback()
@@ -243,9 +251,16 @@ class Conn:
                 if want != env_shared:
                     # different shared target than _own_ddl baked: bake
                     # OUR views under the lock too
+                    # CRITICAL (P3X close-out): this instance (PG 18.6) has
+                    # NO pg_advisory_xact_lock(bigint,bigint) overload (only
+                    # (bigint) and (int,int) — verified on mnemo2db). The
+                    # two-::bigint form raised UndefinedFunction, the except
+                    # swallowed it, and NO lock was ever taken — the whole
+                    # 7f88ee2/92d138d serialization was a silent no-op. Use
+                    # the single-bigint overload, key = hash of dsn+dbname.
                     self._cx.execute(
                         "SELECT pg_catalog.pg_advisory_xact_lock("
-                        "hashtext(%s)::bigint, pg_catalog.hashtext(%s)::bigint)",
+                        "pg_catalog.hashtext(%s || x'1f'::text || %s)::bigint)",
                         (self.dsn, self.dbname))
                     for stmt in _d.shared_view_statements(want):
                         self._cx.execute(stmt)
@@ -347,6 +362,14 @@ class Conn:
         # ddl.statements anyway). Restored afterwards so view CREATEs
         # still land in a valid schema (pg_catalog is not creatable).
         stmts = mod.statements(self.kind, self.schema)
+        # statements(kind=private) appends the CROSS-AGENT views (bare
+        # target names, pointing at the shared schema). Under the
+        # pg_catalog-pinned table batch a bare CREATE VIEW would target
+        # pg_catalog -> fail. Use the qualified bake form for those.
+        if self.kind == "private":
+            stmts = [s for s in stmts if "CREATE OR REPLACE VIEW shared_"
+                     not in s] + list(
+                mod.bake_view_statements(self.schema))
         _in_tables = False
         for stmt in stmts:
             if stmt.startswith("CREATE TABLE"):

@@ -1,0 +1,84 @@
+# phase3.result.md — LCM2-MNEMO2-P3X (close-out attempt, 2026-11-02 01:52–02:24 SAST)
+
+STATUS: NOT fully green — work order step 3 executed (25-min fix window
+expired). Suite state at stop: 18 passed / 1 failed
+(tests/mnemo2/test_r8_concurrency.py::test_concurrent_shared_surface).
+Everything red is committed (nothing uncommitted, porcelain 0 at push).
+
+## Failure (exact)
+- Test: test_concurrent_shared_surface (solo rerun reproduces, ~every run).
+- Error: ['a died' or 'a#0': UniqueViolation: duplicate key value violates
+  unique constraint "pg_type_typname_nsp_index"
+  DETAIL: Key (typname, typnamespace)=(working_memory, <oid>) already exists.]
+- Which writer dies varies (a or b); ddl-serialization sibling test
+  (test_concurrent_different_schema_bootstraps_no_unique_violation) passes —
+  the race is specific to the shared+private bootstrap OVERLAP, not the
+  plain two-private-schema race 92d138d fixed.
+
+## Root-cause picture (evidence-backed)
+1. Advisory lock IS taken on every bootstrap (instrumented probe:
+   scratch/probe_shared_surface.py shows adv_lock_held=True on both
+   private and shared Conn entries). 92d138d + (dsn,dbname) keying landed.
+2. _own_ddl() commits CREATE EXTENSION inside itself -> the xact-scoped
+   advisory lock is RELEASED mid-bootstrap at that commit; the remaining
+   CREATE TABLE IF NOT EXISTS batch then runs UNSERIALIZED.
+   (7f888ee's comment documents this tradeoff deliberately: extension +
+   CREATE TABLE in one txn trips pg_depend races.)
+3. The unserialized remainder races on pg_type in at least one of these
+   overlap classes:
+   a) private Conn bakes shared_* CROSS-VIEW DO-blocks and shared-schema
+      Conn bootstraps concurrently — view CREATE holds ACCESS EXCLUSIVE on
+      shared-schema base tables, serializing against the shared bootstrap
+      (sibling's 9ba7664 restructure moved the rebake under the lock —
+      landed after my window; test_shared_visible_from_two_agents went
+      green, r8 surface write still dies).
+   b) unqualified CREATE TABLE IF NOT EXISTS resolves through search_path;
+      a private (schema,public) and a shared (schema) Conn can resolve the
+      SAME name into DIFFERENT namespaces -> both catcache-skip, both
+      INSERT pg_type. (a31acd4 self-qualification closes this class.)
+4. psycopg connection __exit__ COMMITS (not rollbacks) on clean exit, so
+   the probe "hold lock across a sleep" test released it silently — lock
+   isolation alone (18.6 has (int,int) and (bigint) advisory overloads;
+   (bigint,bigint) does NOT exist, confirmed on the live instance) was
+   never actually being held across the DDL batch in the probe either.
+
+## Attempted diagnoses / fixes during window
+- pgconn advisory lock fully pg_catalog-qualified (mine, committed in
+  0ff33b4 lineage) — no behavior change (functions are in pg_catalog
+  anyway; overload mismatch noted above is in the PROBE SQL, plugin SQL
+  itself casts both args to bigint and silently falls into the
+  UndefinedFunction rollback path?? NO — plugin call resolves
+  (bigint,bigint)? NOT confirmed: instance pg_proc shows only (bigint)
+  and (int,int) overloads. The plugin's
+  pg_advisory_xact_lock(hashtext(%s)::bigint, hashtext(%s)::bigint)
+  matches NEITHER overload -> UndefinedFunction -> swallowed by the
+  except: rollback in __enter__ -> NO LOCK EVER TAKEN. ** PRIME SUSPECT,
+  NOT FIXED IN WINDOW. **
+  VERIFY FIRST in next session: SELECT pg_advisory_xact_lock(1::bigint,2::bigint)
+  on mnemo2db — if UndefinedFunction, the whole 7f88ee2/92d138d advisory
+  serialization was a no-op from the start and the correct minimal fix is
+  pg_advisory_xact_lock(hashtext(%s)::bigint) — SINGLE-key (or the
+  (int,int) overload WITHOUT the ::bigint casts).
+- ddl.py: self_schema qualification of every CREATE TABLE (sibling lane
+  landed a31acd4 variant; mine was equivalent).
+- ddl.py: private shared_* views baked schema-qualified (my edit, landed
+  inside sibling's 525aeef/9ba7664 lineage).
+- _want_views AttributeError hardening (mine, 0ff33b4) then sibling init
+  (9ba7664).
+- Instrumented probes: scratch/probe_shared_surface.py (lock-held check),
+  scratch/probe_trace.py (timing trace; died on sibling's transient
+  broken state — kept for next session).
+
+## Companion chaos note (honesty)
+A sibling agent (api-cfecb2e747530314 / api-3dba7ab6274158bc) was live-
+editing the SAME files (ddl.py, pgconn.py, conftest FakeCtx, r8 test)
+through the whole window, committing under its own token
+LCM2-MNEMO2-P3-CONT. Its edits and mine interleaved on disk; every wip
+snapshot commit under P3X exists because the worktree was mid-edit by it.
+The suite moved 16/17 -> 18/19 under the combined edits; the LAST
+remaining failure is the one above.
+
+## Gate status at stop
+- Full suite: 18 passed, 1 failed (test_concurrent_shared_surface).
+- r8 test 3x: 1 failed / 2 failed / 1 failed variants (never 3x green).
+- porcelain: 0 after close commit.
