@@ -100,7 +100,10 @@ def test_vendor_wildcard_enumeration_is_documented():
     names = vendor_tool_names()
     assert len(names) >= 15, names
     # A1's 15 provides_tools must be a subset of the wildcard union
-    from test_r4_tools_surface import VENDOR_TOOLS
+    try:
+        from tests.lcm2.test_r4_tools_surface import VENDOR_TOOLS
+    except ModuleNotFoundError:  # flat import mode (no tests/__init__.py)
+        from test_r4_tools_surface import VENDOR_TOOLS
     assert set(VENDOR_TOOLS) <= names, set(VENDOR_TOOLS) - names
 
 

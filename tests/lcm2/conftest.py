@@ -61,7 +61,11 @@ def dsn():
     # the drop is cascade'd and the sweep classes are identical to
     # scripts/sweep_public_residue.py's.
     _public_tables = re.compile(r"^(?!pg_.*$)[a-z0-9_]+$", re.I)
-    with pgconn.connect(BASE_DSN, "public", ddl=True) as cx:
+    # The sweep itself must not trip the public-busy ddl guard (the guard
+    # is what we're sweeping FOR): connect ddl=False for the drop pass —
+    # DROP is qualified (public.<rel>) so the search_path hygiene rule
+    # that motivates the guard doesn't apply to the sweep's own DDL.
+    with pgconn.connect(BASE_DSN, "public") as cx:
         stale_rels = [r["relname"] for r in cx.query_dicts(
             "select c.relname from pg_class c "
             "join pg_namespace n on n.oid = c.relnamespace "
