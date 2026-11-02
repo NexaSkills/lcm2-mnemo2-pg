@@ -25,6 +25,15 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 PLUGIN_DIR = str(REPO / "plugins" / "mnemo-pg2")
 sys.path.insert(0, PLUGIN_DIR)
 
+# N-3 (qa3): suite order is randomized; if lcm2's own tests import first,
+# the bare module keys ('pgconn', 'ddl', ...) stay bound to lcm2-pg's
+# files, and a test's `import pgconn` silently binds lcm2-pg's route
+# (agent_schema() -> lcm2_mnemo2agent; lcm2-pg's public-busy tripwire
+# raising on mnemo2db) — the 6 ordering-coupled full-suite failures.
+# The plugin's public import surface binds the bare keys to THIS plugin's
+# files by path (no key theft from a foreign owner); register_agent's
+# namespaced package import stays the authoritative route either way.
+import _public_imports  # noqa: E402,F401  (bare keys -> THIS plugin's files)
 import pgconn  # noqa: E402  (plugin module)
 
 SOCKET = os.environ.get(
@@ -35,6 +44,13 @@ BASE_DSN = f"dbname={DB} host={SOCKET} port=54331 user=mnemo201"
 # Pin the plugin's default DSN + determinism (hashed embeddings, no network).
 os.environ["MNEMO2_PG_DSN"] = BASE_DSN
 os.environ.setdefault("MNEMO2_EMBED_MODEL", "hashed")
+# N-3 (qa3) second half: the suite dsn points at mnemo2db, but if an
+# lcm2 test imported first, the bare `pgconn` key (and a test module's
+# `import pgconn`) still resolves lcm2-pg's file — whose default_dsn
+# fallback is dbname=lcm2db. Tests that pass BASE_DSN explicitly are
+# unaffected; this pins the fallback for any code path that resolves the
+# dsn from env/defaults instead.
+os.environ.setdefault("LCM2_PG_DSN", BASE_DSN)
 
 # Module keys this file creates in sys.modules (host-leak guard).
 _OWNED_KEYS: set[str] = set()

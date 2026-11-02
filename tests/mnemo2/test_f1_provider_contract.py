@@ -114,6 +114,49 @@ blk = prov.system_prompt_block()
 out["prompt_block"] = isinstance(blk, str) and len(blk) > 20
 prov.sync_turn([{"role": "user", "content": "hi"}])
 prov.shutdown()
+
+# N-1 (qa3): FULL session lifecycle through the host's OWN
+# MemoryManager, exactly the shape it calls in production:
+# sync_all(user, assistant, session_id=..., messages=..., turn_author=...)
+# + on_session_end(messages). Before the fix this logged the WARNING
+# pair on every boot: "sync_turn() got multiple values for argument
+# 'messages'" + "'_MnemoPg2Provider' object has no attribute
+# 'on_session_end'". Zero WARNING/ERROR lines is the pin.
+import logging as _logging
+from agent.memory_manager import MemoryManager
+_mm = MemoryManager()
+_mm.add_provider(prov)
+_recs = []
+class _H(_logging.Handler):
+    def emit(self, r):
+        _recs.append((r.levelname, r.getMessage()))
+_lg = _logging.getLogger("agent.memory_manager")
+_lg.addHandler(_H())
+_lg.setLevel(_logging.WARNING)
+prov.initialize("n1-lifecycle-session")
+_mm.sync_all("hello there",
+             "general kenobi",
+             session_id="n1-lifecycle-session",
+             messages=[{"role": "user", "content": "hello there"},
+                       {"role": "assistant", "content": "general kenobi"}],
+             turn_author={"id": "u1", "name": "tester", "is_bot": False})
+import time as _time
+for _ in range(50):  # sync_all runs on the manager's background worker
+    _exc = getattr(_mm, "_sync_executor", None)
+    if _exc is not None:
+        import concurrent.futures as _cf
+        try:
+            _cf.wait([_exc.submit(lambda: None)], timeout=2)
+        except Exception:
+            pass
+    _time.sleep(0.05)
+    if not [m for lv, m in _recs if lv in ("WARNING", "ERROR")]:
+        break
+_mm.on_session_end([{"role": "user", "content": "hello there"},
+                    {"role": "assistant", "content": "general kenobi"}])
+prov.shutdown()
+out["lifecycle_warnings"] = [m for lv, m in _recs
+                             if lv in ("WARNING", "ERROR")]
 print(json.dumps(out))
 '''
 
@@ -156,6 +199,13 @@ def test_provider_slot_resolves_via_host_loader():
     assert r["dispatch_type"] == "str" and r["dispatch_ok_key"], \
         "handle_tool_call must return the vendor-boundary JSON string"
     assert r["prompt_block"]
+    # N-1 (qa3): the host MemoryManager's own sync_all + on_session_end
+    # route must run the FULL session lifecycle with zero provider
+    # warnings (the pre-fix pair: sync_turn multiple-values +
+    # on_session_end AttributeError).
+    assert r["lifecycle_warnings"] == [], (
+        "session lifecycle logged provider warnings: "
+        + " | ".join(r["lifecycle_warnings"]))
 
 
 def test_legacy_pip_provider_is_shadowed_in_repo():

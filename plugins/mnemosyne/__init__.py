@@ -37,6 +37,22 @@ def _published():
     return sys.modules.get("_hermes_memory_providers.mnemosyne")
 
 
+def _contract_path():
+    """OUR plugins/mnemo-pg2/memory_provider.py, located from THIS file.
+
+    Path-anchored, not repo-anchored: the discovery symlink may sit at
+    any depth (profile plugins/, machine ~/.hermes/plugins/), so walking
+    parents off _REPO misresolves. This file lives at
+    <root>/plugins/mnemosyne/__init__.py and the plugin package is the
+    SIBLING dir <root>/plugins/mnemo-pg2/ at the same depth — under
+    symlink resolution both on-disk layouts (repo checkout and any
+    deploy that mirrors the plugins/ root) resolve identically.
+    """
+    return __import__("os").path.normpath(
+        __import__("os").path.join(_HERE, __import__("os").path.pardir,
+                                   "mnemo-pg2", "memory_provider.py"))
+
+
 def register_memory_provider(ctx):
     mod = _published()
     if mod is None:
@@ -47,9 +63,7 @@ def register_memory_provider(ctx):
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(
-            "_mnemo2_provider_bridge.memory_provider",
-            __import__("os").path.join(_REPO, "plugins", "mnemo-pg2",
-                                       "memory_provider.py"))
+            "_mnemo2_provider_bridge.memory_provider", _contract_path())
         if spec is not None and spec.loader is not None:
             holder = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = holder

@@ -47,8 +47,11 @@ tests-before-code, verification-before-assertion.
    the existing lcm-pg cluster (:54329). Env overrides: `BASE PORT ROLE PGBIN SERVICE`.
 3. `bash scripts/onboard_profile.sh <agent>` per test agent
    — profile create, schemas, `.env` params, config via `hermes config set`,
-   plugin symlinks (global + profile -> this checkout's `plugins/`), verify.
-   `--dry-run` prints intended changes.
+   plugin symlinks (profile dir -> this checkout's `plugins/`), verify.
+   Shared-host install (one repo serving every profile): prefix with
+   `LCM2_ONBOARD_GLOBAL=1` to also author the global
+   `$HERMES_HOME/plugins` links; off by default so a QA/fresh-clone run
+   never rewires other profiles. `--dry-run` prints intended changes.
 4. Update = `git pull` + re-run the two scripts (idempotent). Plugin code is
    symlinked, so a pull is live on next session load — no per-profile copies.
 5. Migrate: none yet (Phase 2/3 define vendor→native data migration; scripts

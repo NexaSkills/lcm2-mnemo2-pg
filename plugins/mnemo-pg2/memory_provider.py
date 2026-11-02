@@ -240,12 +240,28 @@ def _make_provider_module():
             except Exception:
                 return ""
 
-        def sync_turn(self, messages=None, **kwargs) -> None:
+        def sync_turn(self, user_content=None, assistant_content=None,
+                      **kwargs) -> None:
+            # Host contract (agent/memory_provider.py MemoryProvider.
+            # sync_turn): called as sync_turn(user, assistant, *,
+            # session_id=..., messages=..., turn_author=...); the manager
+            # only passes messages/turn_author when our signature takes
+            # **kwargs, so a bare `messages=None` positional here made
+            # every turn log "got multiple values for argument
+            # 'messages'" (qa3 N-1). Accept the full shape and drop it.
             # Write capture stays tool-mediated (mnemosyne_remember):
             # automatic per-turn retention would write UNFILTERED chat
             # into the agent's private schema (F-4 rows must be real
-            # memories). on_session_end stays default no-op for the
-            # same reason.
+            # memories).
+            return None
+
+        def on_session_end(self, messages) -> None:
+            # Session-boundary hook (fires at /new, /reset, /branch,
+            # real exit — never per-turn). Explicit no-op for the same
+            # reason as sync_turn: automatic extraction would write
+            # unfiltered transcript into the private schema. Without
+            # this attribute the manager logged a WARNING on every
+            # session end (qa3 N-1).
             return None
 
         def shutdown(self) -> None:
@@ -412,10 +428,35 @@ def _provider_dir_shim() -> None:
         pass
 
 
+def _latebind():
+    try:
+        from . import latebind as _lb  # package-qualified, no bare key
+        return _lb
+    except Exception:
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location(
+            "_mnemo2_impl_latebind_file",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "latebind.py"))
+        if spec is None or spec.loader is None:  # pragma: no cover
+            return None
+        m = _ilu.module_from_spec(spec)
+        sys.modules[spec.name] = m
+        try:
+            spec.loader.exec_module(m)
+        finally:
+            sys.modules.pop(spec.name, None)
+        return m
+
+
 def install() -> None:
     """Idempotent entry: shadow the legacy surface + publish the package
-    (in-memory + filesystem discovery shim)."""
+    (in-memory + filesystem discovery shim) + claim the late bare-name
+    imports our provider-lifetime code makes (latebind)."""
     _shadow_legacy()
     _make_provider_module()
     _extend_provider_prefixes()
     _provider_dir_shim()
+    lb = _latebind()
+    if lb is not None:
+        lb.pin_engine()

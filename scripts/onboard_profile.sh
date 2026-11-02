@@ -7,6 +7,11 @@
 #   - only the profile .env is file-edited (params)
 #   - plugin dirs are SYMLINKS to the single repo source (edit once = all agents)
 #   - delegation posture 1/1 (fleet standard)
+#   - global-dir links ($HERMES_BASE/plugins) are OFF by DEFAULT: onboarding
+#     a profile never rewires the shared global dir other profiles resolve
+#     through (qa3 N-2: a fresh-clone/QA run silently deactivated the whole
+#     host). Shared-host install (one repo for every profile): run with
+#     LCM2_ONBOARD_GLOBAL=1 to author the global links too.
 # Usage: onboard_profile.sh <agent> [--dry-run]   (or: onboard_profile.sh --dry-run
 #       with no agent = list on-disk profiles and exit 0)
 set -euo pipefail
@@ -86,7 +91,18 @@ run hermes -p "$AGENT" config set delegation.max_concurrent_children 1
 run hermes -p "$AGENT" config set delegation.max_spawn_depth 1
 
 echo "== 5. plugin symlinks (single source in this repo) =="
-for d in "$HERMES_BASE/plugins" "$HERMES_BASE/profiles/$AGENT/plugins"; do
+# Profile dir ALWAYS; the SHARED global dir only for the documented
+# shared-host install (LCM2_ONBOARD_GLOBAL=1). Default profile-only so a
+# QA/fresh-clone run cannot silently rewire other profiles on a shared
+# host (qa3 N-2 — the F-6 class: the running clone silently deactivated
+# every other profile's links).
+if [ "${LCM2_ONBOARD_GLOBAL:-0}" = "1" ]; then
+  LINK_DIRS=("$HERMES_BASE/plugins" "$HERMES_BASE/profiles/$AGENT/plugins")
+else
+  LINK_DIRS=("$HERMES_BASE/profiles/$AGENT/plugins")
+  echo "NOTE: global dir $HERMES_BASE/plugins untouched (default; shared-host install: LCM2_ONBOARD_GLOBAL=1)"
+fi
+for d in "${LINK_DIRS[@]}"; do
   mkdir -p "$d"
   run ln -sfn "$REPO/plugins/lcm2-pg"   "$d/lcm2-pg"
   run ln -sfn "$REPO/plugins/mnemo-pg2" "$d/mnemo-pg2"
