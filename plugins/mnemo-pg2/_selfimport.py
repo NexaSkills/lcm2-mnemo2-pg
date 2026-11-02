@@ -297,10 +297,18 @@ def _anchor_locked(name: str, filename: str | None = None):
             sys.modules[name])
         for candidate in (f"{_PKG}.{name}" if _PKG else None,
                           f"_mnemo2_impl_{name}", name):
-            if candidate and candidate in sys.modules and _mine(sys.modules[candidate]):
+            # R8 (P3L): NEVER `key in sys.modules` and then
+            # `sys.modules[key]` — a concurrent register()'s purge (or a
+            # host-side sys.modules sweep) commits its delitem between the
+            # two C atomic ops: KeyError raised INSIDE anchor(), and the
+            # GIL switch interval is not a barrier for C-level dict
+            # commits (witness: a pop-only thread reproduces this exact
+            # frame without any import involved). Read ONCE, then test
+            # the object.
+            cand = sys.modules.get(candidate) if candidate else None
+            if cand is not None and _mine(cand):
                 if candidate == name and _bare_host_pkg:
                     continue  # stale OURS binding under a now-host-owned key
-                cand = sys.modules[candidate]
                 # CONCURRENT-REGISTER GATE (R8): a concurrent register()'s
                 # purge deletes the key while another thread is mid
                 # exec_module on the SAME object — the binding is ours but

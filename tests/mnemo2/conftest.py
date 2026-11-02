@@ -122,14 +122,36 @@ class FakeCtx:
         env = self._env
 
         def wrapped(*a, **kw):
-            prev = dict(os.environ)
-            os.environ.clear()
-            os.environ.update(env)
+            # R8 (P3L): NEVER os.environ.clear()+update() around a handler
+            # call. Two agents' pins interleave and the environ snapshot
+            # read (`dict(os.environ)`, a C iteration) lands inside the
+            # rival's clear window -> KeyError('SHELL'/'INPUT_METHOD'...)
+            # from <frozen os> __getitem__ inside conftest. Apply the
+            # snapshot as SETs + targeted POPs (a key is only ever absent
+            # for microseconds, never gone from the C array), and restore
+            # the same way. Global-env mutation is the very race this
+            # lane is meant to expose in the PRODUCT, not to manufacture
+            # in the harness.
+            prev = None
+            try:
+                prev = os.environ.copy()
+                for k, v in env.items():
+                    if os.environ.get(k) != v:
+                        os.environ[k] = v
+                for k in prev.keys() - env.keys():
+                    os.environ.pop(k, None)
+            except Exception:
+                # env-less host (import-time failure path): run unpinned
+                prev = None
             try:
                 return fn(*a, **kw)
             finally:
-                os.environ.clear()
-                os.environ.update(prev)
+                if prev is not None:
+                    for k, v in prev.items():
+                        if os.environ.get(k) != v:
+                            os.environ[k] = v
+                    for k in os.environ.keys() - prev.keys():
+                        os.environ.pop(k, None)
         return wrapped
 
     def register_tool(self, *, name, toolset, schema, handler, description=""):
@@ -204,8 +226,15 @@ def register_agent(dsn, priv=None, shared=None):
             "(mnemo2agent boot-log defect: 'no register() function')")
         mod.register(ctx)
     finally:
-        os.environ.clear()
-        os.environ.update(prev)
+        # R8 (P3L): same as FakeCtx._pin — rebind/pop, never a global
+        # clear(): a rival thread's snapshot read inside the clear window
+        # KeyErrors from <frozen os>.
+        for k, v in prev.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
+        for k in list(os.environ):
+            if k not in prev:
+                os.environ.pop(k, None)
     return ctx
 
 
