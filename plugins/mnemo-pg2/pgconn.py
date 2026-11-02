@@ -137,6 +137,7 @@ class Conn:
     def __enter__(self) -> "Conn":
         self._cx = self._pool.getconn()
         self._schema_on_conn = self.schema
+        self._conn_env_shared = os.environ.get("MNEMO2_SHARED_SCHEMA")
         # OUR schema is bound session-locally ONLY (never SET ... LOCAL):
         # it is RESET in __exit__ before the connection returns to the
         # pool, so a shared-surface call can never read or write through
@@ -282,7 +283,11 @@ class Conn:
             self._cx.commit()
         except Exception:
             self._cx.rollback()
-        for stmt in mod.statements(self.kind):
+        # Pass OUR resolved schema in (kind-true): ddl.py's env fallback
+        # would re-derive mnemo2_<profile> for a private Conn even when
+        # this Conn points at a test/scratch schema (kind=shared reads
+        # MNEMO2_SHARED_SCHEMA instead of Conn.schema).
+        for stmt in mod.statements(self.kind, self.schema):
             self._cx.execute(stmt)
         if self.kind == "shared":
             # Cross-agent views INSIDE the shared schema, fully qualified

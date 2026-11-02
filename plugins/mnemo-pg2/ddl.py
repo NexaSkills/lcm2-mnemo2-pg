@@ -373,7 +373,8 @@ def shared_view_statements(shared_schema: str | None = None) -> list[str]:
     return [s.replace("{SH}", sh) for s in _SHARED_VIEWS]
 
 
-def statements(kind: str = "private") -> list[str]:
+def statements(kind: str = "private",
+                self_schema: str | None = None) -> list[str]:
     sql = ["CREATE EXTENSION IF NOT EXISTS vector"]
     groups = _CORE + (_PRIVATE_ONLY if kind == "private" else
                      [s for s in _PRIVATE_ONLY
@@ -386,7 +387,20 @@ def statements(kind: str = "private") -> list[str]:
     # catcache skips then miss and both INSERT into pg_type ->
     # pg_type_typname_nsp_index UniqueViolation (surface write escaping
     # into the private schema). Qualify to the Conn's own schema, always.
-    self_schema = shared_schema() if kind == "shared" else agent_schema()
+    # NOT pgconn.agent_schema/shared_schema: ddl.py is deliberately
+    # import-standalone (test_r3) and importing pgconn here pulls psycopg.
+    # The Conn passes its resolved schema in; env fallback mirrors pgconn.
+    if self_schema is None:
+        _os = __import__("os")
+        if kind == "shared":
+            self_schema = _os.environ.get("MNEMO2_SHARED_SCHEMA", "shared")
+        else:
+            self_schema = _os.environ.get("MNEMO2_SCHEMA") or (
+                "mnemo2_" + re.sub(r"[^a-z0-9_]", "_",
+                    (_os.environ.get("HERMES_HOME", "")
+                     .rstrip("/").rsplit("/", 1)[-1] or "default").lower()))
+    if not _SANDBOX_SHARED_RE.match(self_schema):
+        raise ValueError(f"invalid schema name {self_schema!r}")
     seen = set()
     for stmt in groups:
         stmt = stmt.replace("{VEC_DIM}", str(VEC_DIM))
