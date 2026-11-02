@@ -53,6 +53,54 @@ def _contract_path():
                                    "mnemo-pg2", "memory_provider.py"))
 
 
+def _legacy_quarantine():
+    """D-2 self-heal: a LIVE legacy provider module under a bare key.
+
+    The pip distributions ``mnemosyne-hermes`` (entry point
+    ``mnemosyne -> mnemosyne_hermes``) and ``mnemosyne-memory`` ship a
+    package literally named ``mnemosyne`` with a provider class inside.
+    Once ANY import bound one of those files under the bare ``mnemosyne``
+    or ``mnemosyne_hermes`` key (a plugin scan, a provider warm-up
+    import, an entry-point load — the host's
+    ``import_memory_provider_module`` does exactly this), a dir-less
+    loader resolves the slot from ``sys.modules`` and the LEGACY
+    sqlite-era provider answers the agent — the zero-fallback
+    :54331 path never runs (DBPROOF class). The inert shadows
+    memory_provider._shadow_legacy installs only cover keys that were
+    FREE at install time; a live legacy binding needs a move-aside,
+    which only an OUR-dir file may perform — this shim is that file,
+    present at every activation route.
+
+    Policy: never touch OUR published package
+    (``_hermes_memory_providers.mnemosyne``), an existing
+    ``_mnemo2_shadow`` stub, or an unclassifiable module (no
+    __file__/unreadable). A legacy file moves aside under a
+    namespaced quarantine key; a bare ``mnemosyne`` key left unowned
+    is not created (find_spec must not import) — _shadow_legacy
+    covers the free-key case.
+    """
+    try:
+        pub = sys.modules.get("_hermes_memory_providers.mnemosyne")
+        for key in ("mnemosyne", "mnemosyne_hermes"):
+            m = sys.modules.get(key)
+            if m is None or m is pub or getattr(m, "_mnemo2_shadow", False):
+                continue
+            f = getattr(m, "__file__", None)
+            if not isinstance(f, str) or not f:
+                continue
+            try:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    src = fh.read(200000)
+            except OSError:
+                continue
+            if "MemoryProvider" in src or "register_memory_provider" in src:
+                sys.modules[f"_mnemo2_quarantine.{key}"] = m
+                m._mnemo2_quarantined_by = "mnemo-pg2"
+                del sys.modules[key]
+    except Exception:
+        pass  # belt: the activation itself must never hinge on this
+
+
 def register_memory_provider(ctx):
     mod = _published()
     if mod is None:
@@ -60,6 +108,7 @@ def register_memory_provider(ctx):
         # registration ran: load the contract file BY PATH (package-
         # qualified, own-file; never the plugin package's __init__) and
         # install, then yield the same instance.
+        _legacy_quarantine()  # D-2 belt (install() below quarantines too)
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(

@@ -40,6 +40,7 @@ from __future__ import annotations
 import os
 import stat as _stat
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -104,9 +105,32 @@ def _shadow_legacy() -> None:
                 except Exception:
                     pass
                 continue
-            # A live import may already hold code we cannot audit; leave it
-            # (the memory-provider slot still resolves to OUR module by
-            # name) but never overwrite a loaded module mid-import.
+            # D-2 QUARANTINE (was: leave it — which let the legacy
+            # sqlite-era provider keep answering the agent while our
+            # zero-fallback :54331 path never ran): a LIVE legacy
+            # binding is moved aside under a namespaced key instead of
+            # staying in the bare slot. Audited by FILE CONTENT first
+            # (a real provider); OUR published package and existing
+            # shadows were skipped above; the contract-test fixture
+            # (MNEMO2_FAKE_LEGACY) is exempted above too. Code already
+            # imported FROM it by a racer keeps running from its own
+            # references — we only vacate the slot, never unload.
+            try:
+                _f = getattr(cur, "__file__", "") or ""
+                _src = ""
+                if isinstance(_f, str) and os.path.isfile(_f):
+                    with open(_f, encoding="utf-8", errors="replace") as fh:
+                        _src = fh.read(200000)
+            except OSError:
+                _src = ""
+            if ("MemoryProvider" in _src
+                    or "register_memory_provider" in _src):
+                sys.modules[f"_mnemo2_quarantine.{legacy}"] = cur
+                try:
+                    cur._mnemo2_quarantined_by = "mnemo-pg2"
+                except Exception:
+                    pass
+                del sys.modules[legacy]
             continue
         try:
             import importlib.util
@@ -412,11 +436,26 @@ def _provider_dir_shim() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         lex = os.lstat(target)
         if not _stat.S_ISLNK(lex.st_mode):
-            return  # a real dir (a genuine install or the legacy layout):
-                    # never clobber; directory discovery resolves it fine
-        if os.path.realpath(target) == str(target_dir):
+            # D-2 self-heal: a REAL DIR here is an old-install legacy
+            # entry (the machine-side mnemo-pg deploy left exactly
+            # this) and directory discovery resolves it BEFORE any
+            # in-memory route — legacy sqlite-era code answers the
+            # slot. Retire it to a timestamped backup (same policy as
+            # mnemo-pg's own mnemo_update.sh G3 quarantine) and
+            # author the bridge symlink. A real dir we cannot retire
+            # stays untouched (a genuine install; alias route survives).
+            try:
+                bak = Path(home) / "backups" / (
+                    "mnemosyne-dir-quarantined-%s" % time.strftime(
+                        "%Y%m%d-%H%M%S"))
+                bak.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(str(target), str(bak))
+            except OSError:
+                return
+        elif os.path.realpath(target) == str(target_dir):
             return  # already ours
-        os.remove(target)
+        else:
+            os.remove(str(target))
         os.symlink(str(target_dir), str(target))
     except FileNotFoundError:
         try:
