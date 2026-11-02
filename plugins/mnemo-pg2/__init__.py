@@ -297,6 +297,25 @@ def register(ctx, engine_factory=None):
     """
     saved_mods = dict(_sys.modules)
     _disarm = _engage()  # bare sibling imports -> our files, by file
+    # F-1 (generalized '_selfimport' hijack): a bare-key cache hit beats
+    # meta_path finders — sys.modules is consulted FIRST. lcm2-pg boots
+    # before us and publishes its pgconn (engine, ddl, ...) under the
+    # SAME bare names, so a plain `import pgconn` inside our exec would
+    # silently run lcm2's module (wrong agent_schema derivation, wrong
+    # connect() signature — the live mnemo2agent failure class). Pin
+    # every sibling we own to OUR file BEFORE anchoring plugin_entry;
+    # anchor()'s eviction bookkeeping + the finally-block byte-exact
+    # restore below make the whole swap undone at exit, exactly like the
+    # '_selfimport' fix pinned via _selfimport_module().
+    _si = _selfimport_module()
+    for _n in _PKG_MODULES:
+        if _n == "_selfimport":
+            continue  # already ours via _selfimport_module()
+        try:
+            if not _ours_bound(_n):
+                _si.anchor(_n)  # file-anchored; never a bare-key hijack
+        except Exception:
+            pass  # a missing sibling surfaces at its real use site
     # (F1 FIX-3: the old preemptive eviction loop for foreign bare holders
     # and the 1 ms _revert_loop restore-watch thread are GONE. Both widened
     # the race window: evicting a host binding it did not own made a
