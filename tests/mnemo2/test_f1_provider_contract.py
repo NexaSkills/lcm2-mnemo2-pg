@@ -172,9 +172,11 @@ def _host_python() -> str:
 
     def ok(exe):
         try:
+            # Host deps (ruamel via hermes_yaml) AND the plugin's own
+            # (psycopg_pool): the child runs mnemo-pg2 end-to-end.
             return _sp.run(
                 [exe, "-I", "-c",
-                 "import hermes_yaml, hermes_cli.config"],
+                 "import hermes_yaml, psycopg_pool"],
                 capture_output=True, text=True, timeout=30,
                 env={**os.environ, "PYTHONPATH": str(HERMES_ROOT)}
             ).returncode == 0
