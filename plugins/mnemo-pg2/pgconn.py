@@ -5,6 +5,14 @@ DSN/config resolution mirrors lcm2-pg pgconn (plan §4):
   compose MNEMO2_PG_HOST/PORT/USER > dbname=mnemo2db fallback.
 Private schema: MNEMO2_SCHEMA > deterministic mnemo2_<agent> from HERMES_HOME.
 Shared schema: MNEMO2_SHARED_SCHEMA (default `shared`).
+
+P3L: every os.environ read below routes through envbind.eff() — the
+ambient env layered by the thread-local dispatch/pin override (a
+register()-time binding from plugin_entry, or a full-env test pin). The
+process-global env is never trusted lazily at connect time, so a rival
+agent's env churn can never redirect THIS agent's connection. No
+override installed (plain CLI / host single-agent use) => behaviour is
+byte-identical to the old direct-env code.
 """
 from __future__ import annotations
 
@@ -18,6 +26,18 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+try:  # sibling import inside OUR body: _SelfImportFinder serves OUR file
+    import envbind as _envbind
+except ModuleNotFoundError:  # direct-by-path load (tests/probes)
+    import importlib.util as _ilu
+    _p = _ilu.spec_from_file_location(
+        "mnemo2_envbind_here", os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "envbind.py"))
+    if _p is None or _p.loader is None:  # pragma: no cover
+        raise ImportError("mnemo-pg2: envbind.py missing next to pgconn.py")
+    _envbind = _ilu.module_from_spec(_p)
+    _p.loader.exec_module(_envbind)
+
 _pools: dict[tuple, ConnectionPool] = {}
 _pools_lock = threading.Lock()
 _ext_ready: set[str] = set()
@@ -25,21 +45,30 @@ _ext_ready: set[str] = set()
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
+def _envget(name, default=None):
+    ov = getattr(_envbind._tls, "env", None)
+    if ov is None:
+        return os.environ.get(name, default)
+    if name in ov:
+        return ov[name]
+    return os.environ.get(name, default)
+
+
 def default_dsn() -> str:
-    dsn = os.environ.get("MNEMO2_PG_DSN")
+    dsn = _envget("MNEMO2_PG_DSN")
     if dsn:
         return dsn
-    host = os.environ.get("MNEMO2_PG_HOST",
-                          os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
-    port = os.environ.get("MNEMO2_PG_PORT", "54331")
-    user = os.environ.get("MNEMO2_PG_USER", "mnemo201")
+    host = _envget("MNEMO2_PG_HOST",
+                   os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
+    port = _envget("MNEMO2_PG_PORT", "54331")
+    user = _envget("MNEMO2_PG_USER", "mnemo201")
     return f"dbname=mnemo2db host={host} port={port} user={user}"
 
 
 def _profile_name() -> str:
     """Deterministic agent name: HERMES_HOME profile dir, else 'default'.
     NEVER a pinned profile list (fleet practice, same as lcm2-pg)."""
-    hh = os.environ.get("HERMES_HOME", "")
+    hh = _envget("HERMES_HOME", "")
     if hh:
         base = os.path.basename(hh.rstrip("/"))
         if base.startswith("profiles/"):  # pragma: no cover
@@ -52,7 +81,7 @@ def _profile_name() -> str:
 
 
 def agent_schema(explicit: str | None = None) -> str:
-    s = explicit or os.environ.get("MNEMO2_SCHEMA")
+    s = explicit or _envget("MNEMO2_SCHEMA")
     if not s:
         s = "mnemo2_" + re.sub(r"[^a-z0-9_]", "_", _profile_name().lower())
     if not _SCHEMA_RE.match(s):

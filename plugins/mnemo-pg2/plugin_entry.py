@@ -194,19 +194,27 @@ def _schema_for(tool_name):
 
 # ---------------------------------------------------------------- hooks
 
-def _on_session_start(**kw):
+def _scoped(fn, binding):
+    """Run fn under a dispatch binding (thread-local env override)."""
+    with _envbind.scoped(**(dict(binding) if binding else {})):
+        return fn()
+
+
+def _on_session_start(binding=None, **kw):
     """Bootstrap the profile schema (lazy DDL through the plugin's own
     connect) + warm the pool. No-ops safely when PG is unreachable — the
     tools error loudly per-call instead (R3)."""
     try:
-        with _pgconn.connect(None, None, ddl=True) as cx:
-            cx.query_scalar("select 1")
+        def _go():
+            with _pgconn.connect(None, None, ddl=True) as cx:
+                cx.query_scalar("select 1")
+        _scoped(_go, binding)
     except Exception:
         pass
     return None
 
 
-def _pre_llm_call(**kw):
+def _pre_llm_call(binding=None, **kw):
     """Render the injected memory block (vendor "Mnemosyne Memory"-style):
     top global recalls for the last user message. Env-gated off with
     MNEMO2_PREFETCH=0. Returns {'context': str} or None (host contract)."""
@@ -216,7 +224,7 @@ def _pre_llm_call(**kw):
     if not isinstance(msg, str) or not msg.strip():
         return None
     try:
-        res = _engine.Engine().recall(msg, limit=3)
+        res = _scoped(lambda: _engine.Engine().recall(msg, limit=3), binding)
         rows = (res or {}).get("results") or []
         lines = ["## Mnemosyne Context"]
         for r in rows:
@@ -242,22 +250,25 @@ _WRITE_TOOLS = {
 }
 
 
-def _post_tool_call(tool_name="", arguments=None, result=None, **kw):
+def _post_tool_call(tool_name="", arguments=None, result=None,
+                    binding=None, **kw):
     """Audit row for write tools into audit_log (spec §6). Fire-and-forget:
     auditing must never break a turn."""
     if tool_name not in _WRITE_TOOLS:
         return None
     try:
-        with _pgconn.connect(None, None, ddl=True) as cx:
-            cx.execute(
-                "INSERT INTO audit_log(ts, actor, action, target_id, detail)"
-                " VALUES (now(), current_user, %s, %s, %s::jsonb)",
-                (tool_name, str((arguments or {}).get("memory_id", "")),
-                 json.dumps({
-                     "args": arguments,
-                     "ok": (result.get("ok") if isinstance(result, dict)
-                            else None) if result is not None else None,
-                 })[:8000]))
+        def _go():
+            with _pgconn.connect(None, None, ddl=True) as cx:
+                cx.execute(
+                    "INSERT INTO audit_log(ts, actor, action, target_id, detail)"
+                    " VALUES (now(), current_user, %s, %s, %s::jsonb)",
+                    (tool_name, str((arguments or {}).get("memory_id", "")),
+                     json.dumps({
+                         "args": arguments,
+                         "ok": (result.get("ok") if isinstance(result, dict)
+                                else None) if result is not None else None,
+                     })[:8000]))
+        _scoped(_go, binding)
     except Exception:
         pass
     return None
@@ -279,10 +290,6 @@ def register(ctx, engine_factory=None):
                    "shared_schema": _pgconn.shared_schema()}
     except Exception:  # invalid env names: dispatch falls back to env path
         binding = {}
-    if engine_factory is not None:
-        # the host's own engine factory wins (F-series contract); binding
-        # still wraps the call so hooks see a stable resolution.
-        pass
     for name in names:
         handler = (lambda n: (lambda args=None, _b=binding, **kw:
                               _dispatch(n, args if args is not None
@@ -290,7 +297,19 @@ def register(ctx, engine_factory=None):
         ctx.register_tool(name=name, toolset=TOOLSET,
                           schema=_schema_for(name), handler=handler,
                           description=f"mnemo-pg2 vendor-parity tool {name}")
-    ctx.register_hook("on_session_start", _on_session_start)
-    ctx.register_hook("pre_llm_call", _pre_llm_call)
-    ctx.register_hook("post_tool_call", _post_tool_call)
+
+    def _hook(fn):
+        """Bind the agent's resolution into the hook kwargs (host passes
+        **kw only; an explicit param on our hooks receives it)."""
+        if not binding:
+            return fn
+
+        def wrapped(**kw):
+            kw.setdefault("binding", binding)
+            return fn(**kw)
+        return wrapped
+
+    ctx.register_hook("on_session_start", _hook(_on_session_start))
+    ctx.register_hook("pre_llm_call", _hook(_pre_llm_call))
+    ctx.register_hook("post_tool_call", _hook(_post_tool_call))
     return {"tools": len(names), "hooks": 3}

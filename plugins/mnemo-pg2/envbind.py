@@ -41,17 +41,32 @@ def bind_env(dsn=None, schema=None, shared_schema=None):
     return _tls.env
 
 
-def scoped(dsn=None, schema=None, shared_schema=None):
+def scoped(dsn=None, schema=None, shared_schema=None, env=None):
     """Context manager: bind the thread-local resolution (restoring the
-    previous binding on exit). Passing nothing just isolates THIS block's
-    resolution from the ambient env without naming anything."""
+    previous binding on exit). `env` (a full dict) replaces the ambient
+    environment for the block entirely — the test-harness agent pin.
+    Passing nothing just isolates THIS block's resolution from the
+    ambient env without naming anything."""
     class _Scope:
         def __enter__(self_inner):
             self_inner.prev = getattr(_tls, "env", None)
-            bind_env(dsn, schema, shared_schema)
+            if env is not None:
+                _tls.env = dict(env)
+            else:
+                bind_env(dsn, schema, shared_schema)
             return self_inner
 
         def __exit__(self_inner, *exc):
             _tls.env = self_inner.prev
             return False
     return _Scope()
+
+
+def full_env():
+    """The effective environment: thread-local override (pin) layered on
+    the ambient os.environ. Tests must snapshot THIS, not os.environ."""
+    ov = getattr(_tls, "env", None)
+    eff = dict(os.environ)
+    if ov:
+        eff.update(ov)
+    return eff
