@@ -60,28 +60,19 @@ def _finder_hook():
 
     class _Disarm:
         def find_spec(self, fullname, path=None, target=None):
+            # importlib passes path=None for a TOP-LEVEL (bare) import.
+            # Disarm exactly that case: a bare `import _suite_imports`
+            # made while the sibling dir is simply on sys.path. Submodule
+            # imports (path=list/str) resolve via parent __path__ and are
+            # never this machinery's route.
             try:
-                top = fullname.rsplit(".", 1)[-1]
-                if top not in _INERT:
+                if path is not None:
                     return None
-                # only the SIBLING's file: path hint must point at their dir
-                p = None
-                if isinstance(path, (list, tuple)) and path:
-                    p = _os.path.realpath(str(path[0]))
-                else:
-                    # bare import: our conftests prepend dirs; only disarm
-                    # when the search path is the SIBLING dir itself
-                    cand = _os.path.join(_SIB, top + ".py")
-                    if isinstance(path, (list, tuple)):
-                        if not any(_os.path.realpath(str(x)) == _SIB
-                                   for x in path):
-                            return None
-                    elif not (isinstance(path, str)
-                              and _os.path.realpath(path) == _SIB):
-                        return None
-                    if not _os.path.isfile(cand):
-                        return None
-                if p is not None and p != _SIB:
+                top = fullname.rsplit(".", 1)[-1]
+                if top not in _INERT or "." in fullname:
+                    return None
+                cand = _os.path.join(_SIB, top + ".py")
+                if not _os.path.isfile(cand):
                     return None
                 return _ilu.spec_from_loader(
                     fullname, _Loader(fullname))
