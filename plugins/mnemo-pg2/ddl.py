@@ -363,7 +363,7 @@ _SHARED_VIEWS = [
 ]
 
 _SANDBOX_SHARED_RE = __import__("re").compile(r"^[a-z0-9_]+$")
-_REF_ON_RE = re.compile(r"\b(ON(?: TO)? )([a-z_][a-z0-9_]*)(?![\w.])",
+_REF_ON_RE = re.compile(r"\b(ON(?: TO)? )([a-z_][a-z0-9_]*)(\s*)(?![\w.])",
                         re.IGNORECASE)
 
 
@@ -377,7 +377,8 @@ def _qualify_refs(stmt: str, schema: str) -> str:
     if stmt.lstrip().upper().startswith(("CREATE OR REPLACE VIEW",
                                          "CREATE VIEW")):
         return stmt
-    return _REF_ON_RE.sub(lambda m: m.group(1) + f'"{schema}".', stmt)
+    return _REF_ON_RE.sub(lambda m: m.group(1) + f'"{schema}".' + m.group(2)
+                         + m.group(3), stmt)
 
 
 def shared_view_statements(shared_schema: str | None = None) -> list[str]:
