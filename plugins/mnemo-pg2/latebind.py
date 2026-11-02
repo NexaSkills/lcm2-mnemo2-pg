@@ -1,25 +1,41 @@
-"""Provider-side late-binding pins.
+"""Install-time late-binding immunity (boot-order independent).
 
-The provider object and plugin_entry's handlers outlive
-plugins/mnemo-pg2/__init__.py's register(), whose finally-block
-byte-restores sys.modules. Two lazy resolutions can then bind the WRONG
-module — the live crash classes:
+Two lazy resolutions can bind the WRONG module after register()'s
+byte-exact restore (or before it, when the provider slot answers
+FIRST): plugin_entry's module-global `_engine` and engine's module-
+global `pgconn`. Both files import the name at MODULE TOP (`import
+engine`, `import pgconn`), and a top-level bare import from one of our
+files resolves ONLY through: (1) the bare sys.modules key — restored to
+whatever the host/lcm2-pg owns, or (2) meta_path finders. register()'s
+_SelfImportFinder DISARMS after register(), and the general lane may
+anchor plugin_entry outside any window (the provider slot pulling
+plugin_entry in first, or an anchor() whose window serves lcm2's
+files). Both crash classes are one mechanism:
 
-  * engine's module-global `pgconn` re-resolved at connect time onto
-    lcm2-pg's pgconn (its connect() has no kind= kwarg: 'connect() got
-    an unexpected keyword argument kind');
-  * plugin_entry's module-global `_engine` on lcm2-pg's engine module
-    ('module _lcm2_impl_engine has no attribute Engine' — the shim/
-    provider route anchoring OUR plugin_entry late, outside register()'s
-    _SibFinder window).
+  * 'connect() got an unexpected keyword argument kind'  (engine.pgconn
+    -> lcm2-pg's pgconn),
+  * "module '_lcm2_impl_engine' has no attribute 'Engine'"
+    (plugin_entry._engine -> lcm2-pg's engine module under the shared
+    _lcm2_impl_ namespaced key — keys are namespaced, _HERE is per-copy,
+    so OUR finder must sit BEFORE lcm2-pg's on sys.meta_path).
 
-pin_engine() binds both module-globals to OUR file-anchored modules
-through _sibling (route 1 = the SAME objects register()'s anchor
-published; identity, never a copy). setattr on OUR modules only —
-no sys.modules edit, so register()'s byte-exact restore stays intact.
-Anchor() during a live register() window restores the bare keys at
-exit, so the pin is correct no matter WHEN it runs (install(), the
-discovery shim's register(), or both). Idempotent.
+install() therefore:
+  1. anchors OUR engine/pgconn/ddl/embed/plugin_entry under OUR names
+     (via _sibling -> OUR _selfimport.anchor; identity with whatever
+     the general lane published),
+  2. installs a _SibFinder from OUR _selfimport (serves our dir's bare
+     sibling imports for windows started outside register()),
+  3. re-inserts it at meta_path position 0 (lcm2-pg's own finder is
+     type-identical — identity beats type — and whichever finder answers
+     a bare sibling import from an OUR-dir frame answers OUR file:
+     the predicate is our dir, so lcm2's finder serving one for a
+     lcm2-dir frame is untouched),
+  4. pins the module-globals (setattr on OUR modules only; no
+     sys.modules edit; the byte-exact restore invariant holds).
+
+Idempotent: every step is a no-op once done. Called from
+memory_provider.install() (both the general register() route and the
+discovery-shim route run install()).
 """
 from __future__ import annotations
 
@@ -28,72 +44,7 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-# OUR lazily-bound files. Anchoring these up-front makes every late
-# window that imports them run under anchor()'s _SibFinder window
-# (our files, regardless of which host frame starts the import chain).
-_NAMES = ("engine", "pgconn", "ddl", "embed")
-
-
-def _anchor_late_files():
-    for name in _NAMES:
-        try:
-            full = "_mnemo2_impl_" + name
-            if sys.modules.get(full) is not None:
-                continue
-            spec = _ilu.spec_from_file_location(full, os.path.join(_HERE, name + ".py"))
-            if spec is None or spec.loader is None:  # pragma: no cover
-                continue
-            mod = _ilu.module_from_spec(spec)
-            sys.modules[full] = mod
-            try:
-                spec.loader.exec_module(mod)
-            except BaseException:
-                sys.modules.pop(full, None)
-                raise
-        except Exception:
-            pass
-
-
-class _ServeOnlyFinder:
-    """Serve OUR <name>.py for bare import of `name` ONLY when the
-    importer frame is one of OUR files (identical predicate and
-    bootstrap-skip discipline as _selfimport._SibFinder /
-    __init__._from_our_dir; host frames always get the normal answer).
-    Publishes NOTHING into sys.modules — the byte-exact restore of
-    register() stays intact."""
-
-    def __init__(self, name):
-        self._name = name
-
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname != self._name:
-            return None
-        try:
-            here = os.path.realpath(_HERE)
-        except Exception:  # pragma: no cover
-            here = _HERE
-        try:
-            fr = sys._getframe(1)
-        except Exception:  # pragma: no cover
-            return None
-        while fr is not None:
-            base = os.path.basename(str(getattr(fr.f_code, "co_filename", "")))
-            if base.startswith(("_bootstrap", "_frozen_importlib")):
-                fr = fr.f_back
-                continue
-            fn = getattr(fr.f_globals, "__file__", "")
-            if isinstance(fn, str) and fn:
-                try:
-                    if os.path.dirname(os.path.realpath(fn)) == here:
-                        full = "_mnemo2_impl_" + self._name
-                        mod = sys.modules.get(full)
-                        if mod is None:  # not anchored yet
-                            return None
-                        return getattr(mod, "__spec__", None)
-                except Exception:
-                    pass
-            fr = fr.f_back
-        return None
+_LATE_FILES = ("engine", "pgconn", "ddl", "embed", "plugin_entry")
 
 
 def _sib():
@@ -115,36 +66,111 @@ def _sib():
             sys.modules.pop(sp.name, None)
 
 
+def _selfimport():
+    try:
+        from . import _selfimport as _si  # package-qualified, no bare key
+        return _si
+    except Exception:
+        sp = _ilu.spec_from_file_location(
+            "_mnemo2_impl_latebind_selfimport",
+            os.path.join(_HERE, "_selfimport.py"))
+        if sp is None or sp.loader is None:  # pragma: no cover
+            return None
+        m = _ilu.module_from_spec(sp)
+        sys.modules[sp.name] = m
+        try:
+            sp.loader.exec_module(m)
+            return m
+        finally:
+            sys.modules.pop(sp.name, None)
+
+
 def install_serve_only() -> None:
-    """Idempotent: anchor our lazily-imported files + install one
-    frame-gated finder per name (no sys.path/sys.modules edits)."""
-    _anchor_late_files()
-    for name in _NAMES:
-        if any(type(f).__name__ == "_ServeOnlyFinder"
-               and getattr(f, "_name", None) == name
-               for f in sys.meta_path):
-            continue
-        sys.meta_path.insert(0, _ServeOnlyFinder(name))
+    """Anchor OUR late-imported files and front-load OUR sibling finder
+    so bare imports from our files (outside register()'s window) land on
+    our files. No sys.path/sys.modules mutations."""
+    si = _selfimport()
+    if si is None:  # pragma: no cover
+        return
+    sib = _sib()
+    if sib is None:  # pragma: no cover
+        return
+    for name in _LATE_FILES:
+        try:
+            sib(name)  # anchor via _sibling's routes (identity)
+        except Exception:
+            pass
+    # OUR _SibFinder instance, front position: an OUR-dir frame's bare
+    # import must not reach lcm2-pg's identical-type finder first. The
+    # instance lives under a namespaced key (module attribute survives
+    # register()'s purge; the sys.modules entry is re-set defensively —
+    # it is OUR namespaced key, never a bare/host key).
+    finder = getattr(si, "_latebind_sibfinder", None)
+    if finder is None:
+        try:
+            finder = si._SibFinder()
+        except Exception:  # pragma: no cover  (older _selfimport API)
+            return
+        si._latebind_sibfinder = finder
+    sys.modules.setdefault("_mnemo2_impl_latebind_sibfinder", finder)
+    for i, f in enumerate(sys.meta_path):
+        if f is finder:
+            if i:
+                del sys.meta_path[i]
+            break
+    else:
+        sys.meta_path.insert(0, finder)
 
 
 def pin_engine() -> bool:
-    """Bind OUR lazily-resolved module-globals (plugin_entry._engine,
-    engine.pgconn) to the file-anchored modules. Boot-order independent
-    and idempotent; setattr on OUR modules only."""
+    """Bind OUR module-globals to the file-anchored modules. Idempotent;
+    setattr on OUR modules only.
+
+    SELF-HEALING by design: every late code path that touches engine
+    (the provider class's prefetch/tool handlers, plugin_entry's
+    dispatch/schema builders) calls _pin() FIRST, so the pin holds
+    regardless of boot order or which lane anchored plugin_entry."""
     try:
         sib = _sib()
         if sib is None:  # pragma: no cover
             return False
         eng = sib("engine")
-        pg = sib("pgconn")
-        pe = sib("plugin_entry")
+        if getattr(eng, "Engine", None) is None:
+            return False  # pragma: no cover  (wrong file bound: refuse)
+        pg = sys.modules.get("_mnemo2_impl_pgconn")
+        if pg is None or getattr(pg, "connect", None) is None:
+            pg = sib("pgconn")
         _sig = __import__("inspect").signature(pg.connect).parameters
         if "kind" not in _sig:
             return False  # wrong file bound: refuse to pin a foreign pgconn
         if getattr(eng, "pgconn", None) is not pg:
             setattr(eng, "pgconn", pg)
-        if getattr(getattr(pe, "_engine", None), "Engine", None) is None:
-            setattr(pe, "_engine", eng)
+        # plugin_entry: OUR file-anchored copy. Route 3 (anchor by file
+        # under OUR _selfimport) rather than _sibling route 2, because
+        # _sibling's package-qualified fallback can hand back the copy
+        # anchored under the SHARED key by another plugin's finder.
+        pe = _anchor_pe(sib)
+        if pe is None:  # pragma: no cover
+            return False
+        setattr(pe, "_engine", eng)
         return True
     except Exception:
         return False
+
+
+def _anchor_pe(sib):
+    """plugin_entry anchored to OUR file under OUR namespaced keys."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for k in ("_mnemo2_impl_plugin_entry",):
+        m = sys.modules.get(k)
+        f = getattr(m, "__file__", None)
+        if isinstance(f, str) and os.path.realpath(f) == os.path.realpath(
+                os.path.join(here, "plugin_entry.py")):
+            return m
+    si = _selfimport()
+    if si is not None:
+        try:
+            return si.anchor("plugin_entry")
+        except Exception:
+            pass
+    return sib("plugin_entry")
