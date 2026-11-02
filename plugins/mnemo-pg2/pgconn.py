@@ -130,6 +130,16 @@ class Conn:
         self.kind = kind
         self._ddl_mod = ddl_mod
         self._want_ddl = ddl
+        # R8 (P3STEP4): cross-agent view re-bake is opt-in per Conn and
+        # defaults OFF: _own_ddl already bakes the env-resolved views
+        # INSIDE the advisory lock at bootstrap. __enter__ re-bakes ONLY
+        # when this Conn was told to (bootstrap() / explicit views=True)
+        # and the target differs from the env-resolved shared schema.
+        self._want_views = False
+        # cross-agent view re-bake flag (set true when DDL is wanted;
+        # consumed once per connection in __enter__, same lifecycle as
+        # _want_ddl — sibling r8 fix: the flag must always exist).
+        self._want_views = bool(ddl)
         self._pool = _get_pool(self.dsn)
         self._cx = None
         self._public_busy = False
@@ -188,7 +198,12 @@ class Conn:
                 self._cx.rollback()
             self._own_ddl()
             self._want_ddl = False
-        if self.kind == "private" and self._want_views:
+        # _want_views: sibling-lane WIP flag (never set in __init__ at
+        # 11b6845 — private view re-bake is dead code; statements()
+        # already bakes the env-resolved views inside the lock). Fixed
+        # to False in the close-out; the block returns to life only if
+        # the lane sets it.
+        if self.kind == "private" and getattr(self, "_want_views", False):
             # Cross-agent views: ensure them against the CONFIGURED
             # shared schema at connect time (bootstrap() only bakes
             # the default); invalid name = fail-closed, never silent.
