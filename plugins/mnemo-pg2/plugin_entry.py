@@ -30,9 +30,13 @@ import pgconn as _pgconn
 
 TOOLSET = "memory"  # vendor parity (spec §2)
 
-# The 42 wildcard names are loaded from the checked-in list at register()
-# time (repo file first, env override for probes). Names map 1:1 onto
-# Engine.<name> methods (mnemosyne_import -> Engine.import_).
+# The 42 wildcard names. SELF-CONTAINMENT (F-1): the authoritative list
+# ships INSIDE the plugin dir (vendor_tools.txt, byte-identical to the
+# repo's tests/mnemo2_vendor_tools_wildcard.txt — a test pins it), so a
+# deployed plugin (profile/global plugin dirs, no repo checkout) always
+# finds it. The repo tests-dir path stays as a fallback for checkouts.
+_TOOLS_FILE_LOCAL = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "vendor_tools.txt")
 _WILDCARD_FILE = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir,
     "tests", "mnemo2_vendor_tools_wildcard.txt"))
@@ -51,8 +55,16 @@ def _wildcard_names():
     env = _envget("MNEMO2_TOOLS")
     if env:  # explicit list wins (probe escape hatch)
         return sorted(n.strip() for n in env.split(",") if n.strip())
-    with open(_WILDCARD_FILE, "r", encoding="utf-8") as fh:
-        names = sorted(n.strip() for n in fh if n.strip())
+    names = []
+    for path in (_TOOLS_FILE_LOCAL, _WILDCARD_FILE):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                names = sorted(n.strip() for n in fh if n.strip())
+        except OSError:
+            continue
+        if len(names) >= 42:
+            return names
+        break
     if len(names) < 42:
         # Self-containment: the checked-in list lives in the repo tests
         # dir; when the plugin is deployed standalone (hermes plugin

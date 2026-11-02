@@ -23,6 +23,33 @@ import sys
 import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+# F-1 IDENTITY: every module key published by THIS package copy carries our
+# dir stamp. The bare '_selfimport' key is owned by BOTH plugin packages
+# (lcm2-pg + mnemo-pg2 each ship a file-anchored loader under that name);
+# host boot (context-engine scan / lcm2-pg register) may leave the key
+# bound to lcm2-pg's file, and mnemo-pg2.register's `from _selfimport
+# import anchor` would then silently run lcm2's anchor with lcm2's _HERE:
+# mnemo-pg2's register() registered lcm2-pg's 15 lcm_* tools and ZERO
+# mnemosyne_* tools (F-1). A foreign _HERE means we are a different copy:
+# never read, publish, or serve from another package's registries.
+_OURS_HERE = os.path.realpath(_HERE)
+
+
+def _key_ours(key: str) -> bool:
+    """True if the module bound under `key` is OUR file (or unbound).
+    Guards every shared-key lookup against the other plugin package's
+    loader copy holding the key."""
+    m = sys.modules.get(key)
+    if m is None:
+        return True
+    f = getattr(m, "__file__", None)
+    if not isinstance(f, str):
+        return False
+    try:
+        return os.path.dirname(os.path.realpath(f)) == _OURS_HERE
+    except Exception:
+        return False
+
 # R8 (P3STEP4): anchor()'s read-if-ready / else-exec is NOT atomic — two
 # concurrent register() calls raced into the rebuild path and one EXECUTED
 # A LIVE, FULLY-BUILT MODULE OBJECT in place (re-running its top-level

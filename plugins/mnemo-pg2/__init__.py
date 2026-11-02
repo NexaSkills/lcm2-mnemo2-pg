@@ -306,7 +306,16 @@ def register(ctx, engine_factory=None):
     # removes foreign keys, so no racer can observe a foreign-bound bare
     # name as OUR file.)
     try:
-        from _selfimport import anchor
+        # F-1 ROOT CAUSE: the bare '_selfimport' key is shared by BOTH
+        # plugin packages (lcm2-pg ships one too, and host boot leaves it
+        # bound to lcm2-pg's file). `from _selfimport import anchor` there-
+        # fore silently bound lcm2-pg's loader: anchor("plugin_entry")
+        # resolved lcm2-pg/plugin_entry.py against lcm2's _HERE and
+        # mnemo-pg2 registered lcm2's 15 lcm_* tools — zero mnemosyne_*
+        # tools (F-1). Resolve OUR copy explicitly: package-qualified
+        # import never touches the bare key (same discipline as
+        # _sibling()/pgconn's own-FILE bind).
+        anchor = _selfimport_module().anchor
         pe = anchor("plugin_entry")
         return pe.register(ctx, engine_factory=engine_factory)
     finally:
