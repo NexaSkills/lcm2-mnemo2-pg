@@ -111,9 +111,11 @@ def registered(dsn, schema):
     import importlib
     import os
     os.environ["LCM2_DISABLE_MODEL"] = "1"  # deterministic extractive summaries
-    import engine as E
+    # fix6 N-3: OUR engine by FILE (namespaced key) — never the bare key,
+    # which the sibling suite may have proxied onto mnemo's file.
+    E = _own_module("engine")
     eng = E.LCM2Engine(dsn=dsn, schema=schema)
-    entry = importlib.import_module("plugin_entry")
+    entry = _own_module("plugin_entry")
 
     class FakeCtx:
         def __init__(self):
