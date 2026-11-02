@@ -70,10 +70,19 @@ def test_forced_failure_no_sqlite_fallback():
     ]
     # NUL separators are NOT allowed in execv argv (ValueError: embedded
     # null byte), so the child program goes through stdin instead.
+    # (the F1 bare-key immunity: a foreign `pgconn` binding must not
+    # poison this file's own calls) and the child interpreter's (the
+    # mnemo2 sibling suite prepends plugins/mnemo-pg2 to sys.path in a
+    # shared pytest process; the child inherits it and `import pgconn`
+    # would land on mnemo-pg2's connect() — whose fail-closed
+    # _resolve_dsn(None) ignores the bogus DSN below and connects to the
+    # REAL mnemo2db, materialising 40 vendor tables in lcm2db.public).
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONPATH", "LCM2_PG_DSN")}
+    env["LCM2_PG_DSN"] = "postgresql:///lcm2db?host=/nope&port=1&user=x"
     child = "\n".join(_lines).format(plugin=str(PLUGIN))
     out2 = subprocess.run(
-        [sys.executable, "-"], input=child, capture_output=True, text=True,
-        timeout=60, env={**os.environ,
-                        "LCM2_PG_DSN": "postgresql:///lcm2db?host=/nope&port=1&user=x"})
+        [sys.executable, "-"], input=child, capture_output=True,
+        text=True, timeout=60, env=env)
     assert "AssertionError" not in out2.stderr, out2.stderr[-1500:]
     assert "clean-fail" in out2.stdout, (out2.stdout, out2.stderr[-1500:])
