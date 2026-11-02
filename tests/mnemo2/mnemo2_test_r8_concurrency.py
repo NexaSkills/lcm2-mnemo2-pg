@@ -16,7 +16,7 @@ import uuid
 
 import pytest
 
-from conftest import register_plugin
+import tests.mnemo2.conftest as _c  # qualified: never the sibling suite's conftest
 
 N = 8  # writers per agent
 
