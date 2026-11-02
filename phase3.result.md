@@ -238,3 +238,35 @@ re-confirmed green this run via test_shared_cross_agent in-suite 3x.
 porcelain 0; origin/main == 8907831fe4514966b4e5774b628682cb6a65ca9d.
 
 PHASE 3 COMPLETE
+
+## P3-FIX close-out (token LCM2-MNEMO2-P3-FIX2, supersedes FIX1)
+
+FINAL SHA: d57531e3f679698a1be645100596ed7fd5a74f57 (fix for H-5, the
+loose envbind end left open at 8907831; built on pushed e0efc5e).
+
+Resolution (fix3 step A option "keep it as a proper commit"): envbind.py
+REMOVED from product (fix2 F2 option b — its only consumer was the
+3rd-party callsite that never materialised). The per-agent env binding
+is self-contained in plugin_entry._envbind_ctx (module-global cell
+_mnemo2_envbind_registry_ours); pgconn reads the SAME cell by
+sys.modules key only — no module imports another at cell level, so both
+load routes work:
+  - normal package import (host route: __init__.py + _selfimport.anchor)
+  - direct-by-path load (tests/probes: spec_from_file_location)
+  - pgconn alone by path (no plugin_entry loaded -> ambient env)
+All three proven by tests/mnemo2/test_p3fix_entry_load.py (4 tests,
+fresh subprocesses). Doc-comments corrected (pgconn header no longer
+claims envbind.eff()). The lane's concurrent-shared-surface test
+comment fix (genuine-overlap writers) rides this commit.
+
+Gate at d57531e (porcelain 0, no other lanes live — the manny
+corrective dispatch exited before the gate):
+  pytest tests/mnemo2 -q           : 23 passed 13.39s / 133.42s / 13.42s (3x green)
+  test_concurrent_shared_surface   : 1 passed 0.45s / 0.56s / 0.36s (solo, 3x green)
+(pre-gate at identical tree: suite 3x 13.1s, r8-pair 3x green.)
+
+H-4 closed: this file cp'd verbatim to
+/home/mybuddy/fleet/reports/lcm2-mnemo2-redesign.phase3.result.md
+(identical by diff). git ls-remote origin main == d57531e.
+
+PHASE 3 COMPLETE
