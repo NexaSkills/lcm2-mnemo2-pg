@@ -411,6 +411,13 @@ def statements(kind: str = "private",
         seen.add(stmt)
         sql.append(stmt)
     if kind == "private":
+        # bake the cross-agent views INSIDE the bootstrap txn (the Conn
+        # holds the advisory lock here) — never from a second, unlocked
+        # connection afterwards (R8: CREATE OR REPLACE VIEW outside the
+        # lock races the shared schema's own bootstrap on pg_type).
+        # The bake reads MNEMO2_SHARED_SCHEMA exactly like the env
+        # fallback above; a Conn with a DIFFERENT shared target re-bakes
+        # under the lock itself (pgconn.Conn.__enter__).
         sql += shared_view_statements()
     return sql
 

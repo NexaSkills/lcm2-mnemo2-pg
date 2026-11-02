@@ -188,22 +188,44 @@ class Conn:
                 self._cx.rollback()
             self._own_ddl()
             self._want_ddl = False
-            if self.kind == "private":
-                # Cross-agent views: ensure them against the CONFIGURED
-                # shared schema at connect time (bootstrap() only bakes
-                # the default); invalid name = fail-closed, never silent.
-                # Bind OUR ddl by FILE (namespaced key) — a bare `import
-                # ddl` binds the HOST's package post-register-purge.
-                _d = sys.modules.get("_mnemo2_impl_ddl")
-                if _d is None or getattr(_d, "shared_view_statements", None) is None:
-                    self._own_ddl()  # binds _mnemo2_impl_ddl by file
-                    _d = sys.modules["_mnemo2_impl_ddl"]
-                try:
-                    for stmt in _d.shared_view_statements():
+        if self.kind == "private" and self._want_views:
+            # Cross-agent views: ensure them against the CONFIGURED
+            # shared schema at connect time (bootstrap() only bakes
+            # the default); invalid name = fail-closed, never silent.
+            # Bind OUR ddl by FILE (namespaced key) — a bare `import
+            # ddl` binds the HOST's package post-register-purge.
+            #
+            # R8 (P3R): the bake is NOT part of the bootstrap critical
+            # path anymore. It used to run in a SEPARATE committed txn
+            # outside the advisory lock — CREATE OR REPLACE VIEW holds
+            # ACCESS EXCLUSIVE on the base tables in the OTHER (shared)
+            # schema, serializing against that schema's own bootstrap
+            # INSERTs into pg_type: the reader times out, retries, and
+            # its IF-NOT-EXISTS catcache skip misses -> pg_type_typname
+            # _nsp_index UniqueViolation (the observed surface-write
+            # race). Instead: (1) _own_ddl already baked the env-resolved
+            # views INSIDE the lock; (2) here we only RE-BAKE when the
+            # connection's shared schema differs from the env-resolved
+            # one, and we take the SAME advisory lock first, so a
+            # concurrent bootstrap can never interleave.
+            _d = sys.modules.get("_mnemo2_impl_ddl")
+            if _d is None or getattr(_d, "shared_view_statements", None) is None:
+                self._own_ddl()  # binds _mnemo2_impl_ddl by file
+                _d = sys.modules["_mnemo2_impl_ddl"]
+            env_shared = os.environ.get("MNEMO2_SHARED_SCHEMA", "shared")
+            try:
+                if self.schema != env_shared:
+                    # different shared target than _own_ddl baked: bake
+                    # OUR views under the lock too
+                    self._cx.execute(
+                        "SELECT pg_catalog.pg_advisory_xact_lock("
+                        "hashtext(%s)::bigint, pg_catalog.hashtext(%s)::bigint)",
+                        (self.dsn, self.dbname))
+                    for stmt in _d.shared_view_statements(env_shared):
                         self._cx.execute(stmt)
-                    self._cx.commit()
-                except Exception:
-                    self._cx.rollback()
+                self._cx.commit()
+            except Exception:
+                self._cx.rollback()
         return self
 
     def __exit__(self, *exc):
