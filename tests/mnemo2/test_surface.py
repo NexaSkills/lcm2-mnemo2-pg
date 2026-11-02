@@ -11,7 +11,8 @@ import pathlib
 
 import pytest
 
-from conftest import register_plugin, FakeCtx  # noqa: F401
+import tests.mnemo2.conftest as _c  # qualified: never the sibling suite's conftest
+register_plugin, FakeCtx = _c.register_plugin, _c.FakeCtx
 
 HERE = pathlib.Path(__file__).resolve().parent
 WILDCARD = (HERE.parent / "mnemo2_vendor_tools_wildcard.txt").read_text()

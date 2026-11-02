@@ -53,7 +53,22 @@ def dsn():
     # schemas (lcm2_lcm2agent/lcm2_mnemo2agent/shared) never match.
     import re
     _family = re.compile(r"^(lcm2_test_.*|lcm2_probe.*|probe_.*|lcm2_dbg_.*)$")
+    # qa3 N-3 (lcm2db half): legacy vendor-era TABLES in schema `public`
+    # (mnemosyne-era leftovers, 40 of them on the shared instance) trip
+    # pgconn's ddl public-busy guard in EVERY schema fixture below —
+    # same class the mnemo2 side already sweeps. Throwaway by
+    # construction (agent data lives in agent schemas, never public);
+    # the drop is cascade'd and the sweep classes are identical to
+    # scripts/sweep_public_residue.py's.
+    _public_tables = re.compile(r"^(?!pg_.*$)[a-z0-9_]+$", re.I)
     with pgconn.connect(BASE_DSN, "public", ddl=True) as cx:
+        stale_rels = [r["relname"] for r in cx.query_dicts(
+            "select c.relname from pg_class c "
+            "join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = 'public' "
+            "and c.relkind in ('r','p','m','v','f') order by 1")]
+        for rel in stale_rels:
+            cx.execute(f'DROP TABLE IF EXISTS public."{rel}" CASCADE')
         stale = [r["nspname"] for r in cx.query_dicts(
             "select nspname from pg_namespace")
             if _family.match(r["nspname"])]
