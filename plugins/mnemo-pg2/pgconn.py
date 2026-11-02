@@ -155,7 +155,19 @@ class Conn:
             # private-owned public.shared_* view must never shadow the
             # real shared tables — R5 fail-closed, not search-order).
             tail = "" if self.kind == "shared" else ", public"
-            self._cx.execute("SET search_path TO %s%s" % (self.schema, tail))
+            # CREATE-time name resolution note: `CREATE VIEW x` lands in
+            # the FIRST existing schema of search_path — a literal
+            # `pg_catalog,` prefix would make unqualified view CREATEs
+            # fail ("permission denied to create pg_catalog.x", observed).
+            # So: our schema stays FIRST for CREATEs (correct target by
+            # construction), and _own_ddl sets pg_catalog FIRST for just
+            # the CREATE TABLE IF NOT EXISTS batch (catalogue probes must
+            # never resolve through a half-built fresh schema — the
+            # second pg_type race class). The trailing pg_catalog here is
+            # only a safety net for the ordinary runtime path (always
+            # exists implicitly; explicit for clarity, harmless).
+            self._cx.execute("SET search_path TO %s%s,pg_catalog"
+                             % (self.schema, tail))
             if not self._cx.autocommit:
                 self._cx.commit()
         except Exception:

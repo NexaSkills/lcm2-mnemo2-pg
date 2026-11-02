@@ -363,6 +363,21 @@ _SHARED_VIEWS = [
 ]
 
 _SANDBOX_SHARED_RE = __import__("re").compile(r"^[a-z0-9_]+$")
+_REF_ON_RE = re.compile(r"\b(ON(?: TO)? )([a-z_][a-z0-9_]*)(?![\w.])",
+                        re.IGNORECASE)
+
+
+def _qualify_refs(stmt: str, schema: str) -> str:
+    """Attach `schema`. to every bare relation reference in a DDL
+    statement (CREATE INDEX ... ON t, ALTER TABLE, etc.) — but NEVER to
+    statements already carrying a qualified name or to the cross-agent
+    VIEW statements (they reference shared.* / mnemo2_* on purpose)."""
+    if "." in stmt.split("(")[0]:
+        return stmt
+    if stmt.lstrip().upper().startswith(("CREATE OR REPLACE VIEW",
+                                         "CREATE VIEW")):
+        return stmt
+    return _REF_ON_RE.sub(lambda m: m.group(1) + f'"{schema}".', stmt)
 
 
 def shared_view_statements(shared_schema: str | None = None) -> list[str]:
@@ -408,6 +423,17 @@ def statements(kind: str = "private",
         if m and m.group(2) not in _QUALIFIED:
             stmt = f'{m.group(1)}"{self_schema}".{m.group(2)}' + \
                 stmt[m.end():]
+        else:
+            # R8 race class (2): the qualification above covers CREATE
+            # TABLE only. CREATE INDEX / ALTER TABLE / any other object
+            # statement still resolves its target through search_path —
+            # two concurrent bootstraps in different (fresh) schemas
+            # "find" each other's working_memory, their IF-NOT-EXISTS
+            # catcache skip misses after a snapshot race, and both
+            # INSERT into pg_type -> pg_type_typname_nsp_index
+            # UniqueViolation. Qualify every ` ON <table>` /
+            # ` ON TO <table>`-style relation reference to OUR schema.
+            stmt = _qualify_refs(stmt, self_schema)
         seen.add(stmt)
         sql.append(stmt)
     if kind == "private":
@@ -418,7 +444,17 @@ def statements(kind: str = "private",
         # The bake reads MNEMO2_SHARED_SCHEMA exactly like the env
         # fallback above; a Conn with a DIFFERENT shared target re-bakes
         # under the lock itself (pgconn.Conn.__enter__).
-        sql += shared_view_statements()
+        # RACE CLOSE: qualify the baked views to a schema, never bare —
+        # a CREATE VIEW with no explicit target lands in the CURRENT
+        # schema (the first search_path entry). The shared-surface
+        # bootstrap runs with search_path = the shared schema, so an
+        # overlapping private bootstrap baked shared_* INTO the shared
+        # schema's namespace; the later real CREATE then collided on
+        # pg_type_typname_nsp_index (the r8 surface-write race). The
+        # private views belong in the private schema = self_schema.
+        sql += [s.replace(
+            "CREATE OR REPLACE VIEW ", f'CREATE OR REPLACE VIEW "{self_schema}".', 1)
+            for s in shared_view_statements()]
     return sql
 
 
