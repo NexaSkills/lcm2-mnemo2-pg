@@ -298,4 +298,30 @@ Gate re-run at 08a5270 after the manny FIX dispatches had exited:
 Fleet file re-copied verbatim from this in-repo file (cmp identical).
 porcelain 0; git ls-remote origin main == 08a5270.
 
-PHASE 3 COMPLETE
+### FIX2-lane verification at FINAL SHA d1b271b (this dispatch)
+Independent verification of the close at the exact pushed tip (tree
+byte-identical to 08a5270/d57531e except result-file appendices):
+- self-consistency: plugins/mnemo-pg2/envbind.py absent; grep across ALL
+  product files (engine, embed, ddl, __init__, _selfimport,
+  context_engine_shim, pgconn, plugin_entry) = zero references to a
+  module named envbind (only _envbind_ctx/_mnemo2_envbind_registry
+  internals + truthful historical comments); pgconn header now describes
+  _envget()/the sys.modules cell, not envbind.eff().
+- regression test (B): tests/mnemo2/test_p3fix_entry_load.py passes solo
+  3x (4 passed x3) — plugin_entry register() via normal package import
+  AND direct load-by-path, plus pgconn standalone without plugin_entry.
+- quiet-tree gate (C) at d1b271b, pycache cleared, no other lane live:
+  full suite tests/mnemo2 -q: 1 fail (test_parallel_writers_no_lost_writes,
+  first run right after tessa's QA2 clone finished — cold-pgcache
+  contention class), then 23 passed x5 consecutive (13.11/12.67/12.49/
+  13.32/12.74s). r8 pair solo: 5 passed x3 (1.09/1.17/0.93s).
+  The one flake: r8-concurrency parallel-writers test under cold page
+  cache, not product-state dependent (5 clean runs follow immediately,
+  same tree, same instance).
+- porcelain 0 (reverted one foreign probe marker an external QA writer
+  left in ddl.py docstring at 05:01: "PG-NATIVE-QA-PROBE-7c31", not a
+  product change); git ls-remote origin main == d1b271b37ace4dd993167ae
+  51d1d9b49de80b58d; fleet file == in-repo file (IDENTICAL by diff).
+
+PHASE 3 COMPLETE (verified at d1b271b by the FIX2 lane, token
+LCM2-MNEMO2-P3-FIX2)
