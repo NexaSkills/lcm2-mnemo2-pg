@@ -285,3 +285,17 @@ Gate re-verified on FINAL tip d57531e (porcelain 0, pycache cleared):
   full suite: 23 passed x3 (13.56s / 12.83s / 13.08s)
   r8 files:   5 passed x3 (1.04s / 1.39s / 1.13s)
 PHASE 3 COMPLETE (gate re-confirmed on d57531e by the P3END lane).
+
+### P3-FIX final reconciliation (15 min later)
+A sibling P3END lane pushed 08a5270 (phase3.result.md-only addendum;
+git diff d57531e..08a5270 -- plugins/ tests/ scripts/ = EMPTY, product
+tree byte-identical) while this fix-close was copying the fleet file.
+FINAL SHA is therefore 08a5270824e50af03f8521204fca6de9cfed3e4a (=
+origin/main; product code == d57531e, the fix-close commit).
+Gate re-run at 08a5270 after the manny FIX dispatches had exited:
+  r8 pair solo: 5 passed 1.27s / 1.38s / 1.20s (3x green)
+  full suite:   23 passed 13.12s (plus 3x green at byte-identical d57531e)
+Fleet file re-copied verbatim from this in-repo file (cmp identical).
+porcelain 0; git ls-remote origin main == 08a5270.
+
+PHASE 3 COMPLETE
