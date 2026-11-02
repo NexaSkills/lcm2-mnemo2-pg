@@ -323,3 +323,13 @@ def _install_bare_arbiter():
 
 
 _install_bare_arbiter()
+
+# fix6 N-3 (combined-run source-introspection window, sibling half):
+# see _src_window.py — rewinds THIS suite's test modules' module-global
+# `pgconn` to mnemo-pg2's own file only while their own tests run.
+try:
+    import _src_window as _sw
+    pytest_runtest_logstart = _sw.pytest_runtest_logstart
+    pytest_runtest_logfinish = _sw.pytest_runtest_logfinish
+except Exception:  # pragma: no cover - hygiene must never break the run
+    pass
