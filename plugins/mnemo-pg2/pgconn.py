@@ -140,6 +140,20 @@ class Conn:
 
     def __enter__(self) -> "Conn":
         self._cx = self._pool.getconn()
+        # DDL CRITICAL (P3X root cause): getconn() hands back a POOLED
+        # connection with whatever session state the previous borrower
+        # left. The runtime RESET/SETs are COMMITTED (idle-in-transaction
+        # ends at the SET), so a rival bootstrap's pg_catalog-lead path
+        # or another schema's path can be live on this connection before
+        # we ever run. _ensure_clean resets per session-param, and PG
+        # RESET search_path restores the ROLE default (empty here) —
+        # useless. When this Conn will run DDL, reset-and-re-assert the
+        # path immediately after getconn: pg_catalog-lead so even the
+        # advisory lock probe can never resolve a relation through a
+        # half-built FOREIGN schema (the pg_type_typname_nsp_index race).
+        # Non-DDL conns keep the plain SET below.
+        if self._want_ddl:
+            self._cx.execute("SET search_path TO pg_catalog,pg_temp")
         self._schema_on_conn = self.schema
         self._conn_env_shared = os.environ.get("MNEMO2_SHARED_SCHEMA")
         # OUR schema is bound session-locally ONLY (never SET ... LOCAL):
@@ -166,6 +180,18 @@ class Conn:
             # second pg_type race class). The trailing pg_catalog here is
             # only a safety net for the ordinary runtime path (always
             # exists implicitly; explicit for clarity, harmless).
+            # DDL CRITICAL (P3X root cause): this SET runs BEFORE the
+            # advisory lock and is COMMITTED (psycopg autocommit=False
+            # does not imply an open txn — idle-in-transaction means no
+            # open txn here). A pooled connection returned by another
+            # Conn keeps whatever search_path THAT Conn set (including
+            # _own_ddl's pg_catalog-lead for its CREATE batch, restored
+            # only on that Conn's exit path). A second bootstrap thread
+            # then getconn()s it and runs its CREATE TABLE IF NOT EXISTS
+            # probes through the FOREIGN schema at the head of the path,
+            # "finds" the rival's working_memory, skips, misses, and both
+            # INSERT into pg_type -> pg_type_typname_nsp_index (the r8
+            # race). Force OUR path INSIDE the lock, after it is held.
             self._cx.execute("SET search_path TO %s%s,pg_catalog"
                              % (self.schema, tail))
             if not self._cx.autocommit:
@@ -208,6 +234,13 @@ class Conn:
                     "SELECT pg_catalog.pg_advisory_xact_lock("
                     "pg_catalog.hashtext(%s || x'1f'::text || %s)::bigint)",
                     (self.dsn, self.dbname))
+                # RE-ASSERT our path now that the lock is held: a pooled
+                # conn may arrive with a FOREIGN search_path left by the
+                # previous borrower's _own_ddl (pg_catalog-lead or another
+                # schema). Inside the lock, this SET + everything _own_ddl
+                # does is serialized against every other bootstrap.
+                self._cx.execute("SET search_path TO pg_catalog,%s%s"
+                                 % (self.schema, tail))
             except Exception:
                 self._cx.rollback()
             self._own_ddl()
