@@ -71,9 +71,17 @@ else
   set_param() {  # set_param KEY VALUE — in-place update or append
     local k=$1 v=$2
     if grep -q "^${k}=" "$PENV"; then
-      sed -i "s|^${k}=.*|${k}=${v}|" "$PENV"
+      # NB: ${v%$'\n'} guard is load-bearing. A value that ever carries a
+      # trailing newline (command substitution with echo) makes this sed's
+      # replacement end in a literal newline: the KEY= line then SWALLOWS
+      # the next line and the merged value is an unparseable URI
+      # ('extra key/value separator' at connect, fail-closed -> sqlite
+      # fallback = the trade/warren pure-sqlite class). No $() feeds this
+      # today; the guard makes the silent-corruption path structurally
+      # impossible regardless of caller.
+      sed -i "s|^${k}=.*|${k}=${v%$'\n'}|" "$PENV"
     else
-      printf '%s=%s\n' "$k" "$v" >> "$PENV"
+      printf '%s=%s\n' "$k" "${v%$'\n'}" >> "$PENV"
     fi
   }
   # NOTE: schema is derived by convention from the agent name (lcm2_<agent> /

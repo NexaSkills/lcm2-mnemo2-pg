@@ -45,6 +45,15 @@ Phase 1 ships inert skeletons (discovery-valid `plugin.yaml`, no tools/hooks).
 
 - `scripts/setup_instance.sh` — idempotent: initdb + unit (+ role bootstrap via
   single-user backend) + dbs + schemas. All binaries from the private PGBIN.
+  Ends with `bootstrap_verify.sh` (item-0 assertion): role/db/schemas/postmaster/
+  pg_hba must all be REAL, exit non-zero otherwise — an initdb leg that silently
+  no-ops leaves a LISTENing :54331 with zero bootstrap state (trade/warren
+  fresh-host class), invisible to `systemctl is-active`.
+- `scripts/bootstrap_verify.sh [agent ...]` — the assertion itself (standalone;
+  same BASE/PORT/ROLE/PGBIN env surface as setup_instance.sh).
+- `scripts/env_dsn_check.sh [file ...]` — asserts every LCM2/MNEMO2 DSN line in
+  root+profile .env files parses as one clean URI (merged-line = sqlite-fallback
+  class); deterministic red/green, safe for check_all.
 - `scripts/setup_dbs.sh [agent ...]` — idempotent: lcm2db + mnemo2db + role +
   schemas on the dedicated instance only; fails loudly if a `shared` schema ever
   appears in lcm2db (R2 guard).

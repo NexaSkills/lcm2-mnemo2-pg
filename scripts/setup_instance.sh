@@ -116,4 +116,12 @@ $PSQL -d lcm2db   -Atc "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'lcm
 $PSQL -d mnemo2db -Atc "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'mnemo2%' OR nspname='shared' ORDER BY 1"
 echo "DSN_LCM2=postgresql://$ROLE@localhost:$PORT/lcm2db?host=$RUN"
 echo "DSN_MNEMO2=postgresql://$ROLE@localhost:$PORT/mnemo2db?host=$RUN"
+
+echo "== 6. bootstrap assertion (never trust the exit code) =="
+# A LISTENing :54331 whose initdb leg silently no-oped looks healthy from
+# `systemctl is-active` yet answers 'role does not exist' for every real
+# login (fresh-host roll dies pure-sqlite: same family as the T-2 lesson).
+# Fail the SETUP here, deterministically, so no fresh-host roll proceeds on a
+# cluster with no bootstrap state.
+bash "$(dirname "$0")/bootstrap_verify.sh" "$@" || exit 1
 echo "DONE"
