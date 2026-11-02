@@ -54,10 +54,14 @@ def dsn():
     # mid-suite (SIGKILL/timeout/Ctrl-C, incl. a concurrent lane's run being
     # stopped) skips teardown and leaves lcm2_test_<uuid> behind; the F3
     # residue tripwire then fails an UNRELATED later run (qa round showed
-    # exactly this). Sweep classes are throwaway by construction; profile
-    # schemas (lcm2_lcm2agent/lcm2_mnemo2agent/shared) never match.
+    # Sweep classes are throwaway by construction; profile
+    # schemas (lcm2_lcm2agent/lcm2_mnemo2agent/shared) never match. qa4
+    # classes: the SIBLING suite's throwaway families (mnemo2_test_*/
+    # shared_test_*) also land in lcm2db when combined ordering lets its
+    # fixtures bootstrap against this db, and *_qa4*/lcm2_r4test* are
+    # gate-probe residue naming conventions.
     import re
-    _family = re.compile(r"^(lcm2_test_.*|lcm2_probe.*|probe_.*|lcm2_dbg_.*|lcm2_qa4.*|mnemo2_qa4.*|mnemo2_test_.*|shared_test_.*)$")
+    _family = re.compile(r"^(lcm2_test_.*|lcm2_probe.*|probe_.*|lcm2_dbg_.*|lcm2_qa.*|lcm2_r4test.*|mnemo2_qa.*|mnemo2_test_.*|mnemo2_probe.*|shared_test_.*|p3[ab]?)$")
     # qa3 N-3 (lcm2db half): legacy vendor-era TABLES in schema `public`
     # (mnemosyne-era leftovers, 40 of them on the shared instance) trip
     # pgconn's ddl public-busy guard in EVERY schema fixture below —
@@ -65,24 +69,38 @@ def dsn():
     # construction (agent data lives in agent schemas, never public);
     # the drop is cascade'd and the sweep classes are identical to
     # scripts/sweep_public_residue.py's.
-    _public_tables = re.compile(r"^(?!pg_.*$)[a-z0-9_]+$", re.I)
-    # The sweep itself must not trip the public-busy ddl guard (the guard
-    # is what we're sweeping FOR): connect ddl=False for the drop pass —
-    # DROP is qualified (public.<rel>) so the search_path hygiene rule
-    # that motivates the guard doesn't apply to the sweep's own DDL.
-    with pgconn.connect(BASE_DSN, "public") as cx:
-        stale_rels = [r["relname"] for r in cx.query_dicts(
-            "select c.relname from pg_class c "
-            "join pg_namespace n on n.oid = c.relnamespace "
-            "where n.nspname = 'public' "
-            "and c.relkind in ('r','p','m','v','f') order by 1")]
-        for rel in stale_rels:
-            cx.execute(f'DROP TABLE IF EXISTS public."{rel}" CASCADE')
-        stale = [r["nspname"] for r in cx.query_dicts(
-            "select nspname from pg_namespace")
-            if _family.match(r["nspname"])]
-        for n in stale:
-            cx.execute(f'DROP SCHEMA IF EXISTS "{n}" CASCADE')
+    # N-3 (qa4 root fix): BOTH databases of the instance are swept, not just
+    # this suite's. In COMBINED ordering the sibling suite's lcm2-flavoured
+    # fixtures bootstrap the lcm2 engine against the OTHER db, and public
+    # residue there trips pgconn's ddl public-busy guard (pgconn.py
+    # 'refusing ddl bootstrap while schema public holds relations') in every
+    # lcm2 schema fixture. Worse, a public table AT REST re-appears live:
+    # mnemo-pg2's shared-view bake bakes `CREATE VIEW <schema>.<name> AS
+    # SELECT * FROM public.<name>` for every public table into each freshly
+    # bootstrapped schema, so one db's residue repopulates the other's
+    # public during a run. A sweep that only drops tables is therefore not
+    # enough at rest: public views are dropped too (a stale view is exactly
+    # what re-exposes base tables through the bake).
+    for _db in (DB, SIBLING_DB):
+        _dsn = f"dbname={_db} host={SOCKET} port=54331 user=mnemo201"
+        with pgconn.connect(_dsn, "public") as cx:
+            # (view/matview/foreign first, tables after: a view cannot drop
+            # after its base table vanished — CASCADE covers the reverse)
+            stale_rels = [
+                (r["relname"], r["relkind"]) for r in cx.query_dicts(
+                    "select c.relname, c.relkind from pg_class c "
+                    "join pg_namespace n on n.oid = c.relnamespace "
+                    "where n.nspname = 'public' "
+                    "and c.relkind in ('v','m','f','r','p') "
+                    "order by (c.relkind in ('r','p')), c.relname")]
+            for rel, kind in stale_rels:
+                stmt = "DROP VIEW" if kind in "vmf" else "DROP TABLE"
+                cx.execute(f'{stmt} IF EXISTS public."{rel}" CASCADE')
+            stale = [r["nspname"] for r in cx.query_dicts(
+                "select nspname from pg_namespace")
+                if _family.match(r["nspname"])]
+            for n in stale:
+                cx.execute(f'DROP SCHEMA IF EXISTS "{n}" CASCADE')
     return BASE_DSN
 
 
