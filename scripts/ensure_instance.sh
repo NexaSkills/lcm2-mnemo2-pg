@@ -14,8 +14,18 @@ if [ -z "$PGBIN" ]; then
   for c in "$BASE/bin" "$HOME/lcm2-mnemo2-pg/pg/bin" "$HOME/lcm-pg/pg/bin"; do
     [ -x "$c/psql" ] && { PGBIN=$c; break; }
   done
+  # F-8/H-1 (qa3): a FRESH CLONE has an EMPTY $BASE/bin (postgres binaries
+  # are not in the repo), so a $BASE/bin default would break every psql
+  # call below — same candidate-loop-not-found case already handled in
+  # onboard_profile.sh (PSQL_BIN). Fall back to PATH psql (system postgres)
+  # rather than a guaranteed-missing local path.
+  if [ ! -x "$BASE/bin/psql" ] && command -v psql >/dev/null 2>&1 \
+       && [ ! -n "${PGBIN:-}" ]; then PGBIN=""; fi
   PGBIN=${PGBIN:-$BASE/bin}
 fi
+# PGBIN empty => bare `psql` from PATH (H-1: no guaranteed-missing prefix).
+PSQL_BIN="psql"
+[ -n "$PGBIN" ] && [ -x "$PGBIN/psql" ] && PSQL_BIN="$PGBIN/psql"
 UNIT=lcm2-mnemo2-pg.service
 LOG=$HOME/.hermes/logs/lcm2-mnemo2-ensure.log
 note(){ echo "$(date -Is) $*" >> "$LOG"; }
@@ -29,7 +39,7 @@ for _i in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "$BASE/run/.s.PGSQL.$PORT" ] && break
   sleep 1
 done
-PSQL="$PGBIN/psql -h $BASE/run -p $PORT -U $ROLE -d postgres"
+PSQL="$PSQL_BIN -h $BASE/run -p $PORT -U $ROLE -d postgres"
 if ! $PSQL -Atc 'select 1' >/dev/null 2>&1; then
   # role or hba broken: offline-fix via single-user backend (no other server
   # may be running against this DATA dir; the unit is stopped first).
