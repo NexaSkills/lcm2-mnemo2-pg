@@ -134,6 +134,29 @@ def pytest_runtest_logstart(nodeid, location):
         for n in SHARED:
             if not _ours_bound(n):
                 _pin(n)
+        # qa4 N-3: import statements can also fire from WITHIN the test
+        # body (after logstart pinned, but resolving via sys.path if a
+        # pin's own module-level import escaped to a sibling's file).
+        # A per-import re-pin is the cheap deterministic backstop.
+        try:
+            import builtins as _b
+            if not getattr(_b.__import__, "_lcm2_repin", False):
+                _real_import = _b.__import__
+
+                def _repin_import(name, globals=None, locals=None,
+                                  fromlist=(), level=0):
+                    mod = _real_import(name, globals, locals, fromlist, level)
+                    if level == 0 and name in SHARED and not _ours_bound(name):
+                        try:
+                            _pin(name)
+                            mod = _sys.modules.get(name, mod)
+                        except Exception:
+                            pass
+                    return mod
+                _repin_import._lcm2_repin = True
+                _b.__import__ = _repin_import
+        except Exception:  # pragma: no cover
+            pass
 
 
 def pytest_runtest_logfinish(nodeid, location):
