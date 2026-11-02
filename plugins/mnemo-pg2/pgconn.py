@@ -144,6 +144,16 @@ def _get_pool(conninfo: str) -> ConnectionPool:
                 kwargs={"row_factory": dict_row, "autocommit": False},
             )
             _pools[conninfo] = pool
+            # fix7 order item 2 (wire-or-delete): pubsweep is LIVE. Every
+            # new pool to a db first sweeps that db's public schema of
+            # dangling root-views/residue (self-guarded, advisory-locked,
+            # best-effort) so at-rest public=0 holds BY THE PIN rather than
+            # by an operator running scripts/teardown_residue.py by hand.
+            try:
+                from . import pubsweep as _ps
+                _ps.sweep(conninfo)
+            except Exception:  # pragma: no cover - sweep never breaks connect
+                pass
         return pool
 
 
