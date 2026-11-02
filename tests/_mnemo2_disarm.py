@@ -37,7 +37,7 @@ import types as _types
 
 _REPO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _SIB = _os.path.realpath(_os.path.join(_REPO, "plugins", "mnemo-pg2"))
-_INERT = ("_suite_imports",)          # module(s) whose side effects disarm
+_INERT = ("_suite_imports", "_public_imports")  # machinery modules to disarm
 _MARKER_ATTRS = ("_OURS",)             # markers other guards getattr()
 
 
