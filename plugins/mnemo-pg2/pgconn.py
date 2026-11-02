@@ -335,8 +335,35 @@ class Conn:
         # would re-derive mnemo2_<profile> for a private Conn even when
         # this Conn points at a test/scratch schema (kind=shared reads
         # MNEMO2_SHARED_SCHEMA instead of Conn.schema).
-        for stmt in mod.statements(self.kind, self.schema):
+        #
+        # R8 (P3R) second pg_type race class: while CREATE TABLE IF NOT
+        # EXISTS runs, a FRESH (not-yet-bootstrapped) schema resolves
+        # even the catalogue helper probes through itself, so two
+        # bootstraps in different fresh schemas can each "find" the
+        # other's working_memory, skip, then both insert ->
+        # pg_type_typname_nsp_index UniqueViolation. Pin pg_catalog
+        # FIRST for the CREATE TABLE batch only (name resolution for
+        # unqualified CREATEs in this batch is schema-qualified by
+        # ddl.statements anyway). Restored afterwards so view CREATEs
+        # still land in a valid schema (pg_catalog is not creatable).
+        stmts = mod.statements(self.kind, self.schema)
+        _in_tables = False
+        for stmt in stmts:
+            if stmt.startswith("CREATE TABLE"):
+                if not _in_tables:
+                    self._cx.execute(
+                        "SET search_path TO pg_catalog,%s" % self.schema)
+                    _in_tables = True
+            elif _in_tables:
+                self._cx.execute(
+                    "SET search_path TO %s%s,pg_catalog"
+                    % (self.schema, "" if self.kind == "shared" else ", public"))
+                _in_tables = False
             self._cx.execute(stmt)
+        if _in_tables:
+            self._cx.execute(
+                "SET search_path TO %s%s,pg_catalog"
+                % (self.schema, "" if self.kind == "shared" else ", public"))
         if self.kind == "shared":
             # Cross-agent views INSIDE the shared schema, fully qualified
             # (self-pointing). Surface connections run with public pruned
