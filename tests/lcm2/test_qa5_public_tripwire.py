@@ -43,8 +43,9 @@ def _dsn(dsn):
 
 def _public_tables(pg, dsn):
     with pg.connect(_dsn(dsn), "public") as cx:
-        return set(cx.query_dicts(
-            "select tablename from pg_tables where schemaname='public'"))
+        # set(...) of dicts is unhashable; build a real set of names.
+        return {r["tablename"] for r in cx.query_dicts(
+            "select tablename from pg_tables where schemaname='public'")}
 
 
 def test_public_ddl_tripwire_blocks_then_sweep_clears(dsn):
