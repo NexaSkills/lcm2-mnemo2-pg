@@ -102,3 +102,41 @@ remaining failure is the one above.
   ddl.statements('shared', schema).
 - Commit state: 28583c1 pushed-ready; porcelain 0. NO 'PHASE 3 COMPLETE'
   (suite not fully green at close).
+
+## PHASE 3 LAST ITEM — P3L resume checkpoint + close (token LCM2-MNEMO2-P3L2)
+Timeline (session start 03:2x SAST): checkpoint commit at ~t+2min
+(72dc368), full gate verified by t+8min, closed at ~t+10min (HARD STOP
+20min respected; nothing further touched after green).
+
+### What the in-flight diff does (72dc368, the 2 uncommitted files)
+1. plugins/mnemo-pg2/_selfimport.py (+12): _anchor_locked no longer does
+   `key in sys.modules` then `sys.modules[key]` — the two-step lets a
+   concurrent register()'s purge commit its delitem between the C atomic
+   ops => KeyError INSIDE anchor(). Now a single sys.modules.get() read,
+   then object test. No architecture change; pure TOCTOU closure.
+2. tests/mnemo2/conftest.py (+43): FakeCtx._pin and register_agent
+   restore replaced os.environ.clear()+update() with set-only rebind +
+   targeted pops (both apply and restore directions). Rival-thread
+   snapshot reads (dict(os.environ)) landing inside a clear window were
+   KeyErrors from <frozen os> — harness-manufactured race, not product
+   race. Global env is now never emptied, only overwritten per-key.
+Together with the already-committed 24e202c pgconn vector-probe fix,
+this closes the last r8 failure chain (shared-surface bootstrap).
+
+### Baseline BEFORE full-suite run (step 2, solo 3x)
+test_concurrent_shared_surface alone:
+  run 1: 1 passed, 1 warning in 0.50s
+  run 2: 1 passed, 1 warning in 0.45s
+  run 3: 1 passed, 1 warning in 0.48s
+
+### Full-suite gate (step 3)
+tests/mnemo2 full suite after in-flight diff:
+  19 passed, 1 warning in 12.97s
+repeat x3 (no randomization plugin present; -p no:randomly no-op):
+  19 passed in 13.32s / 19 passed in 12.75s / 19 passed in 13.11s
+r8 green 3x + full suite green => gate MET, no remaining failure.
+
+### State
+porcelain 0, pushed to origin/main.
+
+PHASE 3 COMPLETE
