@@ -367,16 +367,32 @@ class Conn:
                 sys.modules["_mnemo2_impl_ddl"] = mod
                 _p.loader.exec_module(mod)
         # pgvector must exist in THIS database before any VECTOR-typed DDL.
-        # CRITICAL: commit BEFORE the table CREATEs and never hold a lock
-        # across both — a CREATE EXTENSION staying open in the same
-        # transaction as CREATE TABLE trips pg_depend races ("cannot alter
-        # a subobject of an extension", and CREATE TABLE IF NOT EXISTS
-        # surfacing pg_type_typname_nsp_index as UniqueViolation instead
-        # of its own IF-NOT-EXISTS skip). Committed extension first, the
-        # table race below is serialized per-schema by __enter__'s lock.
+        # CRITICAL (P3PIN root cause): the commit below ENDS the bootstrap
+        # transaction, which silently RELEASES the xact-scoped advisory
+        # lock __enter__ took — every later CREATE TABLE IF NOT EXISTS in
+        # this bootstrap runs UNLOCKED (the server observer proved it:
+        # zero advisory rows in pg_locks while two shared-kind backends
+        # were both mid-CREATE-TABLE). A mid-lock commit reintroduces the
+        # pg_type_typname_nsp_index window. So: probe first (catalog read,
+        # lock still held); only when the extension is genuinely MISSING
+        # run the commit-isolated CREATE (it must stay commit-isolated:
+        # an open CREATE EXTENSION in the same txn as the table batch
+        # trips pg_depend races). When it already exists — the normal
+        # bootstrap case — there is NO commit and the lock is held
+        # unbroken through the whole CREATE TABLE batch.
         try:
-            self._cx.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            self._cx.commit()
+            _have = self.query_scalar(
+                "select count(*) from pg_catalog.pg_extension "
+                "where extname = 'vector'")
+            if not _have:
+                self._cx.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                self._cx.commit()
+                # the commit dropped the xact lock: re-acquire (same key,
+                # same semantics as __enter__) before the table batch.
+                self._cx.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock("
+                    "pg_catalog.hashtext(%s || x'1f'::text || %s)::bigint)",
+                    (self.dsn, self.dbname))
         except Exception:
             self._cx.rollback()
         # Pass OUR resolved schema in (kind-true): ddl.py's env fallback
