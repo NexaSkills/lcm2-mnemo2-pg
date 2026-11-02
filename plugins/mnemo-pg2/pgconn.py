@@ -122,6 +122,8 @@ class Conn:
     def __init__(self, dsn: str, schema: str, ddl: bool = False,
                  kind: str = "private", ddl_mod=None):
         self.dsn = dsn or default_dsn()
+        m = re.search(r"dbname=(\w+)", self.dsn)
+        self.dbname = m.group(1) if m else "postgres"
         self.schema = schema or agent_schema()
         if not _SCHEMA_RE.match(self.schema):
             raise ValueError(f"invalid schema name {self.schema!r}")
@@ -170,11 +172,17 @@ class Conn:
             # lock is exactly what's needed; classid discriminator kept
             # for schema-level diagnostics only.
             try:
+                # lockid2 = a CONSTANT, not max(classid): pg_class's max
+                # oid differs per-database (template1 vs mnemo2db), and
+                # advisory locks are INSTANCE-wide (shared memory) — a
+                # per-db second key gave each database its own lock
+                # space, so two same-DSN sessions in different databases
+                # bootstrapped CONCURRENTLY onto the global pg_type.
                 self._cx.execute(
-                    "SELECT pg_advisory_xact_lock("
+                    "SELECT pg_catalog.pg_advisory_xact_lock("
                     "hashtext(%s)::bigint, "
-                    "(SELECT COALESCE(max(classid),0) FROM pg_class)::bigint)",
-                    (self.dsn,))
+                    "pg_catalog.hashtext(%s)::bigint)",
+                    (self.dsn, self.dbname))
             except Exception:
                 self._cx.rollback()
             self._own_ddl()

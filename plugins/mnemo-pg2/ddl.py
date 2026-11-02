@@ -32,6 +32,7 @@ VENDOR_TABLES = (
     " triples working_memory"
 ).split()
 
+_QUALIFIED = set()  # (none today; belt for future quoted literals)
 _TABLE_RE = re.compile(r"CREATE TABLE(?: IF NOT EXISTS)? (\w+)")
 
 # ---- cores + ops shared by both kinds --------------------------------------
@@ -378,9 +379,21 @@ def statements(kind: str = "private") -> list[str]:
                      [s for s in _PRIVATE_ONLY
                       if not any(x in s.split()[:6] for x in _SHARED_EXCLUDE)
                       and not any(f"EXISTS {t} " in s for t in _SHARED_EXCLUDE)])
+    # R8 race class: CREATE TABLE IF NOT EXISTS resolves the target
+    # relation through search_path. Two concurrent bootstraps (a private
+    # and a shared-kind Conn) holding DIFFERENT search_paths can resolve
+    # the SAME unqualified name to different schemas; their IF-NOT-EXISTS
+    # catcache skips then miss and both INSERT into pg_type ->
+    # pg_type_typname_nsp_index UniqueViolation (surface write escaping
+    # into the private schema). Qualify to the Conn's own schema, always.
+    self_schema = shared_schema() if kind == "shared" else agent_schema()
     seen = set()
     for stmt in groups:
         stmt = stmt.replace("{VEC_DIM}", str(VEC_DIM))
+        m = re.match(r"(CREATE TABLE(?: IF NOT EXISTS)? )(\w+)", stmt)
+        if m and m.group(2) not in _QUALIFIED:
+            stmt = f'{m.group(1)}"{self_schema}".{m.group(2)}' + \
+                stmt[m.end():]
         seen.add(stmt)
         sql.append(stmt)
     if kind == "private":
