@@ -42,8 +42,9 @@ import pgconn  # noqa: E402  (plugin module)
 
 SOCKET = os.environ.get(
     "MNEMO2_PG_HOST", os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
+PORT = os.environ.get("MNEMO2_PG_PORT", "54331")  # fix7c: instance split (env bind)
 DB = "mnemo2db"
-BASE_DSN = f"dbname={DB} host={SOCKET} port=54331 user=mnemo201"
+BASE_DSN = f"dbname={DB} host={SOCKET} port={PORT} user=mnemo201"
 
 # Pin the plugin's default DSN + determinism (hashed embeddings, no network).
 os.environ["MNEMO2_PG_DSN"] = BASE_DSN
@@ -73,7 +74,7 @@ def dsn():
         with pgconn.connect(BASE_DSN, "public") as cx:
             assert cx.query_scalar("select 1") == 1
     except Exception as e:
-        pytest.fail(f"mnemo2 instance unreachable at {SOCKET}:54331 db={DB}: "
+        pytest.fail(f"mnemo2 instance unreachable at {SOCKET}:{PORT} db={DB}: "
                     f"{e} (start scripts/ensure_instance.sh; never falls back, R3)")
     # Sweep throwaway schemas LEFT BY PREVIOUS runs before this one mints
     # its own (phase-2 lesson: a killed run skips teardown; residue then

@@ -48,7 +48,7 @@ def dsn():
         with pgconn.connect(BASE_DSN, "public") as cx:
             assert cx.query_scalar("select 1") == 1
     except Exception as e:
-        pytest.fail(f"lcm2 instance unreachable at {SOCKET}{PORT} db={DB}: {e}"
+        pytest.fail(f"lcm2 instance unreachable at {SOCKET}:{PORT} db={DB}: {e}"
                     " (start scripts/ensure_instance.sh; never falls back, R3)")
     # Sweep throwaway schemas LEFT BY PREVIOUS runs before this one mints
     # its own. WHY: the `schema` fixture DROPs in teardown — a run killed
