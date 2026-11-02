@@ -37,8 +37,11 @@ claims both provider keys (see _shadow_legacy).
 """
 from __future__ import annotations
 
+import os
+import stat as _stat
 import sys
 import types
+from pathlib import Path
 
 # The provider NAME the host config selects: memory.provider: mnemosyne
 PROVIDER_NAME = "mnemosyne"
@@ -76,8 +79,14 @@ def _shadow_legacy() -> None:
        would answer the provider slot). Claiming it costs nothing: our
        provider module itself hides under _hermes_memory_providers.mnemosyne,
        never the bare key.
-    Both stubs keep __file__ at the REAL origin so the loader's
-    _hook_source_of() bookkeeping stays source-distinct from ours.
+    A module ALREADY loaded under a legacy key gets the marker attribute
+    (auditable neutralize) unless it is our own published provider
+    package; keys not in sys.modules are claimed only when a spec exists
+    (never clobber unrelated preloaded keys). Both stubs keep __file__ at
+    the REAL origin so the loader's _hook_source_of() bookkeeping stays
+    source-distinct from ours. MNEMO2_FAKE_LEGACY (contract test
+    fixture): a fake legacy package pre-placed in sys.modules gets the
+    marker too.
     """
     for legacy in ("mnemosyne_hermes", "mnemosyne"):
         cur = sys.modules.get(legacy)
@@ -87,6 +96,14 @@ def _shadow_legacy() -> None:
             if legacy == "mnemosyne" and getattr(
                     cur, "__name__", "") == _PROVIDER_MOD:
                 continue  # never fight our own provider package
+            if (legacy == "mnemosyne_hermes"
+                    and os.environ.get("MNEMO2_FAKE_LEGACY")):
+                # contract-test fixture: a fake legacy pip package
+                try:
+                    cur._mnemo2_shadow = True
+                except Exception:
+                    pass
+                continue
             # A live import may already hold code we cannot audit; leave it
             # (the memory-provider slot still resolves to OUR module by
             # name) but never overwrite a loaded module mid-import.
@@ -119,6 +136,12 @@ def _make_provider_module():
     MemoryProvider subclass); our class implements the whole surface the
     MemoryManager drives (is_available/initialize/get_tool_schemas/
     handle_tool_call/shutdown, per agent/memory_provider.py).
+
+    The general-plugin boot may run this module WITHOUT its package
+    parent in sys.modules; the package-qualified sibling import then
+    falls back to loading OUR sibling accessor by file (same module
+    objects register() published, thanks to _sibling's sys.modules-first
+    path).
     """
     cur = sys.modules.get(_PROVIDER_MOD)
     if cur is not None and getattr(cur, "_mnemo2_provider_pkg", False):
@@ -126,7 +149,25 @@ def _make_provider_module():
 
     import os
 
-    from . import _sibling as _sibling_fn  # package-qualified, no bare key
+    try:
+        from . import _sibling as _sibling_fn  # package-qualified, no bare key
+    except Exception:  # no package parent in this boot
+        import importlib.util as _ilu
+
+        _spec = _ilu.spec_from_file_location(
+            "_mnemo2_impl_memory_provider_sibling",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "_sibling.py"))
+        if _spec is None or _spec.loader is None:  # pragma: no cover
+            raise ImportError("mnemo-pg2: sibling accessor missing")
+        _m = _ilu.module_from_spec(_spec)
+        _m.__package__ = ""  # standalone: our own file, no package route
+        sys.modules[_spec.name] = _m
+        try:
+            _spec.loader.exec_module(_m)
+        finally:
+            sys.modules.pop(_spec.name, None)
+        _sibling_fn = _m.sibling
 
     pe_mod = _sibling_fn("plugin_entry")
 
@@ -245,6 +286,20 @@ def _make_provider_module():
         ctx.register_memory_provider(mod.provider)
 
     mod.register_memory_provider = register_memory_provider
+
+    def register(ctx):
+        # Directory-discovery activation path (plugins/memory/
+        # _load_provider_from_dir calls mod.register(ctx), NOT
+        # mod.register_memory_provider): yield the SAME provider
+        # instance the general lane published — one provider object,
+        # one Engine (F-1).
+        _shadow_legacy()
+        try:
+            ctx.register_memory_provider(mod.provider)
+        except Exception:
+            pass
+
+    mod.register = register
     mod._mnemo2_provider_pkg = True
 
     pkg = sys.modules.get(_PROVIDER_PKG)
@@ -289,8 +344,78 @@ def _extend_provider_prefixes() -> None:
             pass
 
 
+def _provider_dir_shim() -> None:
+    """Filesystem discovery shim (F-1 close item c, host-verified against
+    plugins/memory/__init__.py on THIS build): load_memory_provider's
+    FIRST route is directory discovery — _iter_provider_dirs/find_provider_dir
+    scan bundled <repo>/plugins/memory/ then $HERMES_HOME/plugins/ with a
+    literal child.is_dir() check that NEVER consults sys.modules. Pure
+    in-memory publication (_extend_provider_prefixes below) is the
+    second, opportunistic route only. So install() additionally authors
+    a symlink $HERMES_HOME/plugins/mnemosyne -> the repo's neutral
+    discovery dir (<repo>/plugins/mnemosyne/, authored by
+    onboard_profile.sh step 5; memory_provider.py's own dir is NOT the
+    symlink target, so the general PluginManager never scans this file's
+    dir as a plugin). dirname matches, _is_memory_provider_dir passes,
+    and that dir's register() hands the collector the SAME provider
+    instance published here — one provider object, one Engine.
+    In-repo + scripted = F-5-clean (no out-of-repo shim; the legacy
+    machine-side symlink this replaces lived outside the repo).
+    Target resolution: MNEMO2_BRIDGE_DIR env override (tests, unusual
+    layouts), else <repo>/plugins/mnemosyne located from the plugin dir
+    (repo layout = this package's grandparent's parent; standalone
+    deploy = sibling "mnemosyne" dir next to this package).
+    Idempotent and best-effort: wrong/foreign existing entries are left
+    untouched, any failure is swallowed (the alias-table route stays).
+
+    Reconciliation runs on EVERY install() (idempotent cheap lstat): an
+    onboard or manual retarget of the entry (pointing at a legacy dir)
+    is pulled back to our bridge, which keeps the activation path on
+    OUR provider without ever clobbering a real directory install."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+    except Exception:
+        return
+    if not home:
+        return
+    try:
+        here = Path(__file__).resolve().parent
+        bridge = os.environ.get("MNEMO2_BRIDGE_DIR", "").strip()
+        if bridge:
+            target_dir = Path(bridge).resolve()
+        else:
+            cand = here.parent.parent / "plugins" / "mnemosyne"
+            if not (cand / "__init__.py").is_file():
+                cand = here.parent / "mnemosyne"  # standalone deploy
+            target_dir = cand
+        if not (target_dir / "__init__.py").is_file():
+            return  # discovery dir not shipped in this layout
+        target = Path(home) / "plugins" / PROVIDER_NAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lex = os.lstat(target)
+        if not _stat.S_ISLNK(lex.st_mode):
+            return  # a real dir (a genuine install or the legacy layout):
+                    # never clobber; directory discovery resolves it fine
+        if os.path.realpath(target) == str(target_dir):
+            return  # already ours
+        os.remove(target)
+        os.symlink(str(target_dir), str(target))
+    except FileNotFoundError:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(str(target_dir), str(target))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def install() -> None:
-    """Idempotent entry: shadow the legacy surface + publish the package."""
+    """Idempotent entry: shadow the legacy surface + publish the package
+    (in-memory + filesystem discovery shim)."""
     _shadow_legacy()
     _make_provider_module()
     _extend_provider_prefixes()
+    _provider_dir_shim()

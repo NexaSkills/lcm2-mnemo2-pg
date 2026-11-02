@@ -6,13 +6,29 @@ set -uo pipefail
 BASE=${BASE:-$HOME/lcm2-mnemo2-pg/pg}
 PORT=${PORT:-54331}
 ROLE=${ROLE:-mnemo201}
-PGBIN=${PGBIN:-$HOME/lcm-pg/pg/bin}
+PGBIN=${PGBIN:-}
+if [ -z "$PGBIN" ]; then
+  # Self-contained (F-8): our instance ships its own binaries in
+  # $BASE/bin; $HOME/lcm-pg (sibling cluster repo) is only a legacy
+  # fallback, NOT a dependency of a fresh-clone chain.
+  for c in "$BASE/bin" "$HOME/lcm2-mnemo2-pg/pg/bin" "$HOME/lcm-pg/pg/bin"; do
+    [ -x "$c/psql" ] && { PGBIN=$c; break; }
+  done
+  PGBIN=${PGBIN:-$BASE/bin}
+fi
 UNIT=lcm2-mnemo2-pg.service
 LOG=$HOME/.hermes/logs/lcm2-mnemo2-ensure.log
 note(){ echo "$(date -Is) $*" >> "$LOG"; }
 
 systemctl --user start $UNIT 2>/dev/null
-sleep 1
+# F-8: wait for the socket to actually answer (up to ~10s) instead of a
+# fixed 1s sleep after service start — a cold start can pass 'start'
+# while the socket is still coming up, and a false 'unreachable' would
+# trigger the offline repair path while the server is healthy.
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S "$BASE/run/.s.PGSQL.$PORT" ] && break
+  sleep 1
+done
 PSQL="$PGBIN/psql -h $BASE/run -p $PORT -U $ROLE -d postgres"
 if ! $PSQL -Atc 'select 1' >/dev/null 2>&1; then
   # role or hba broken: offline-fix via single-user backend (no other server

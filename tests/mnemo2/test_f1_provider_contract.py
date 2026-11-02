@@ -38,11 +38,24 @@ pytestmark = pytest.mark.skipif(
 # does, then resolve 'mnemosyne' through the HOST loader itself.
 BOOT_AND_RESOLVE = r'''
 import importlib.util, json, os, sys
+import pathlib as _Path_mod
+from pathlib import Path
 sys.path.insert(0, %(host)r)
-# EMPTY home: no provider dirs at all (the F-1 fix must not rely on any
-# filesystem provider install; the shim lived OUTSIDE the repo before).
+# EMPTY home: no provider dirs BEFORE boot (the shim install() authors
+# is an in-repo symlink; the F-1 fix relies on nothing outside the repo).
 from hermes_constants import set_hermes_home_override
 set_hermes_home_override(os.environ["FAKE_HOME"])
+
+# MNEMO2_FAKE_LEGACY: a fake legacy pip provider on the path (the
+# neutralize gate's fixture; never imported by the host before us).
+if os.environ.get("MNEMO2_FAKE_LEGACY"):
+    import types as _t
+    _leg = _t.ModuleType("mnemosyne_hermes")
+    _leg.__file__ = os.path.join(os.environ["FAKE_HOME"], "fake_legacy.py")
+    _leg.__path__ = []
+    _leg.register_memory_provider = lambda ctx: (_ for _ in ()).throw(
+        AssertionError("legacy provider must never answer the slot"))
+    sys.modules["mnemosyne_hermes"] = _leg
 
 spec = importlib.util.spec_from_file_location(
     "hermes_plugins.mnemo_pg2", %(init)r,
@@ -63,12 +76,20 @@ mod.register(Ctx())
 
 # THE CONTRACT: host's own loader, empty home, name from memory.provider
 import plugins.memory as PM
-from pathlib import Path
-srcs = [str(p) for p in PM._external_source_dirs()]
-assert srcs == [] or all("mnemosyne" not in [c.name for c in p.iterdir() if c.is_dir()] for p in PM._external_source_dirs()), \
-    "fixture home unexpectedly carries a provider dir: " + repr(srcs)
 prov = PM.load_memory_provider("mnemosyne")
 out = {"loaded": prov is not None}
+# F-1 close item c: the mechanism is an IN-REPO scripted symlink
+# ($HERMES_HOME/plugins/mnemosyne -> the repo's neutral discovery dir,
+# authored by install()/onboard_profile.sh). The home is empty BEFORE
+# register(); the only legal entry appearing AFTERWARDS is our symlink —
+# no real provider dir, no out-of-repo content (F-5).
+import stat as _stat
+_entries = [p for p in Path(os.environ["FAKE_HOME"], "plugins").iterdir()]
+out["shim"] = (len(_entries) == 1 and _entries[0].name == "mnemosyne"
+               and _stat.S_ISLNK(os.lstat(_entries[0]).st_mode)
+               and "plugins/mnemosyne" in os.path.realpath(_entries[0]))
+out["legacy_claimed"] = bool(getattr(sys.modules.get("mnemosyne_hermes"),
+                                     "_mnemo2_shadow", False))
 if prov is None:
     print(json.dumps(out)); raise SystemExit(0)
 out["name"] = getattr(prov, "name", "")
@@ -119,11 +140,14 @@ def _run(env_extra: dict) -> dict:
 
 def test_provider_slot_resolves_via_host_loader():
     """THE F-1 GATE: load_memory_provider('mnemosyne') returns OUR
-    provider with 42 schemas, in a process with an EMPTY plugins home
-    (no shim, no symlink) after mnemo-pg2.register()."""
+    provider with 42 schemas, in a process whose plugins home was EMPTY
+    before boot; the ONLY entry afterwards is our in-repo scripted
+    symlink (item c; F-5-clean)."""
     r = _run({"MNEMO2_TOOLS": ""})
     assert r["loaded"], ("memory.provider 'mnemosyne' did NOT resolve to "
                          "mnemo-pg2 (R4 boot-warning class)")
+    assert r["shim"], ("provider discovery must run through the in-repo "
+                       "scripted symlink, nothing out-of-repo (F-5)")
     assert r["name"] == "mnemosyne"
     expected = sorted(n.strip() for n in (REPO / "tests" /
         "mnemo2_vendor_tools_wildcard.txt").read_text().splitlines() if n.strip())
@@ -140,3 +164,5 @@ def test_legacy_pip_provider_is_shadowed_in_repo():
     key with an inert stub before anything can register through it."""
     r = _run({"MNEMO2_FAKE_LEGACY": "1"})
     assert r["loaded"]
+    assert r["legacy_claimed"], ("legacy 'mnemosyne_hermes' key not claimed "
+                                 "by the in-repo shadow (_mnemo2_shadow)")

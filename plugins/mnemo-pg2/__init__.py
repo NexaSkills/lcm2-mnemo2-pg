@@ -38,7 +38,18 @@ import sys as _sys
 
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _PKG_MODULES = ("plugin_entry", "engine", "pgconn", "ddl", "embed",
-                "_selfimport")
+                "_selfimport", "memory_provider")
+
+# Published provider keys (memory_provider.install()) that register()'s
+# purge would otherwise DELETE (they bind to OUR files) — F-1b: the host
+# reads the provider slot straight out of sys.modules, so the package
+# must survive until the loader resolves it. "_selfimport" is kept too
+# on purpose: pre-purge bindings already point at OUR anchor object;
+# deleting the bare key (F-2's original hazard) would let a foreign
+# _selfimport rebind it the moment register() returns. anchor() resolves
+# through _selfimport_module() anyway, so the key is only belt.
+_PUBLISH_KEEP = ("_hermes_memory_providers", "_hermes_memory_providers."
+                 "mnemosyne", "_selfimport")
 
 # Names we may publish/resolve OURSELVES (bare, when we own the name).
 _OWN_BARE = set(_PKG_MODULES)
@@ -341,6 +352,9 @@ def register(ctx, engine_factory=None):
         _disarm()
         # 1. purge keys our exec CREATED that bind to OUR files
         for k in set(_sys.modules) - set(saved_mods):
+            if k in _PUBLISH_KEEP:
+                continue  # F-1b: published provider pkg survives for the
+                          # host's memory-provider loader (see _PUBLISH_KEEP)
             try:
                 if _ours_bound(k) or k.startswith(("_mnemo2_impl_", "_lcm2_pg",
                                                     "lcm2_pg")):
@@ -356,8 +370,21 @@ def register(ctx, engine_factory=None):
         #    the diff missed because the key pre-existed with OUR module —
         #    only possible if we ran twice; drop the OUR-bound ones)
         for k in list(_sys.modules):
+            if k in _PUBLISH_KEEP:
+                continue  # F-1b belt (same exemption as step 1)
             if k not in saved_mods and _ours_bound(k):
                 _sys.modules.pop(k, None)
+        # 4. F-1a: publish the memory-provider slot (in-memory package
+        #    _hermes_memory_providers.mnemosyne + legacy shadows) so
+        #    plugins/memory.load_memory_provider('mnemosyne') resolves to
+        #    OUR provider with NO filesystem provider dir (F-1 close item
+        #    a; contract test test_f1_provider_contract drives the host's
+        #    own loader). Best-effort: a failure here must never cost the
+        #    42 tools + 3 hooks the general path already registered.
+        try:
+            _sibling("memory_provider").install()
+        except Exception:
+            pass
 
 
 __version__ = "0.2.0"

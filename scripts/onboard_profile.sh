@@ -22,6 +22,13 @@ PENV=$HERMES_BASE/profiles/$AGENT/.env
 BASE=${BASE:-$HOME/lcm2-mnemo2-pg/pg}
 PORT=${PORT:-54331}
 ROLE=${ROLE:-mnemo201}
+# F-8: our own instance's psql (fresh-clone chain must not depend on the
+# sibling $HOME/lcm-pg cluster); first psql that exists wins.
+PSQL_BIN=""
+for _c in "$BASE/bin/psql" "$HOME/lcm2-mnemo2-pg/pg/bin/psql" "$HOME/lcm-pg/pg/bin/psql"; do
+  [ -x "$_c" ] && { PSQL_BIN=$_c; break; }
+done
+PSQL_BIN=${PSQL_BIN:-psql}
 
 run() { if [ "$DRY" = "--dry-run" ]; then echo "DRY: $*"; else "$@"; fi; }
 
@@ -46,7 +53,7 @@ fi
 [ -n "$DRY" ] && { echo "DRY done"; exit 0; }
 
 echo "== 2. schemas on the dedicated instance =="
-PSQL="$HOME/lcm-pg/pg/bin/psql -h $BASE/run -p $PORT -U $ROLE"
+PSQL="$PSQL_BIN -h $BASE/run -p $PORT -U $ROLE"
 $PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS lcm2_$AGENT"
 $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS mnemo2_$AGENT"
 $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared"
@@ -83,6 +90,11 @@ for d in "$HERMES_BASE/plugins" "$HERMES_BASE/profiles/$AGENT/plugins"; do
   mkdir -p "$d"
   run ln -sfn "$REPO/plugins/lcm2-pg"   "$d/lcm2-pg"
   run ln -sfn "$REPO/plugins/mnemo-pg2" "$d/mnemo-pg2"
+  # memory-provider DISCOVERY entry (F-1c): host's plugins/memory loader
+  # finds providers by DIRECTORY name under these dirs; this neutral
+  # in-repo dir bridges to the provider mnemo-pg2 publishes (plugins/
+  # mnemosyne/ in the repo, authored nowhere else — F-5-clean).
+  run ln -sfn "$REPO/plugins/mnemosyne" "$d/mnemosyne"
 done
 
 echo "== 6. plugin enable (idempotent; CLI, not config-file edits) =="
