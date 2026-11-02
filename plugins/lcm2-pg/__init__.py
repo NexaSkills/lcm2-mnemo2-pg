@@ -170,6 +170,13 @@ _PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_HERE))
 
 class _SibFinder:
     def find_spec(self, fullname, path=None, target=None):
+        # Submodule imports (tools.<sub>) resolve against the parent
+        # package's __path__, not meta_path; answering them here would
+        # strand a partially-imported "tools" (the F1 FIX-3 lesson:
+        # half-restored package state strands submodules). Flat files
+        # only.
+        if "." in fullname:
+            return None
         try:
             p = _os.path.join(_HERE, fullname + ".py")
             if not _os.path.exists(p):
