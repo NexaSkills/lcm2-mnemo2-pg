@@ -23,10 +23,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 import engine as _engine
 import pgconn as _pgconn
-import envbind as _envbind
 
 TOOLSET = "memory"  # vendor parity (spec §2)
 
@@ -48,7 +48,7 @@ def _method_name(tool_name):
 
 
 def _wildcard_names():
-    env = os.environ.get("MNEMO2_TOOLS")
+    env = _envget("MNEMO2_TOOLS")
     if env:  # explicit list wins (probe escape hatch)
         return sorted(n.strip() for n in env.split(",") if n.strip())
     with open(_WILDCARD_FILE, "r", encoding="utf-8") as fh:
@@ -87,14 +87,16 @@ def _dispatch(tool_name, args):
             eng = None
         if eng is None:
             eng = _engine.Engine()
-        # P3L (dispatch-bind): handlers registered by register() carry a
-        # per-agent BINDING (dsn/schema/shared_schema resolved ONCE at
-        # register time). The dispatch runs under that binding as a
-        # thread-local env override, so a write can never follow the
-        # process-global env into a rival agent's pin window (r8: agent
-        # a's rows landing in agent b's schema, silently). A binding-
-        # less dispatch (hooks, host-provided engine, direct Engine use)
-        # resolves per-call from env exactly as before.
+        # P3L fix-close (option b): envbind.py is OUT of product code
+        # (its only consumer was the 3rd-party callsite that never
+        # materialised). Handlers registered by register() carry the
+        # agent's register-time resolution (dsn/schema/shared_schema) as
+        # a __binding__ marker; _dispatch installs it through
+        # _envbind_ctx around the Engine call, so a rival agent's env
+        # churn cannot redirect this agent's writes mid-call (r8
+        # misplacement class). __binding__ is stripped before the Engine
+        # call. A binding-less dispatch resolves per-call from env, as
+        # before.
         _binding = None
         if isinstance(args, dict):
             _binding = args.get("__binding__")
@@ -113,7 +115,7 @@ def _dispatch(tool_name, args):
         # is not an Engine kwarg.
         if "__binding__" in kwargs:
             _binding = kwargs.pop("__binding__") or _binding
-        with _envbind.scoped(**(dict(_binding) if _binding else {})):
+        with _envbind_ctx(_binding):
             out = fn(**kwargs)
         if isinstance(out, str):
             return out
@@ -194,9 +196,81 @@ def _schema_for(tool_name):
 
 # ---------------------------------------------------------------- hooks
 
+class _envbind_ctx:
+    """Self-contained per-agent env binding (P3L fix-close: the binding
+    lives HERE, inside product code — no separate module file; its cell is
+    located by a namespaced sys.modules key so pgconn can consult the
+    SAME cell without importing this file). Layer the agent's
+    register-time resolution (dsn/schema/shared_schema -> env names) over
+    os.environ for the duration of one dispatch/hook.
+    Engine resolves its defaults through pgconn's env funnel at connect
+    time, which consults the same cell, so a rival agent's env churn can
+    never redirect this agent's writes mid-call (r8 misplacement class).
+    Module-global override cell located by sys.modules KEY (shared by
+    every copy of this file in the interpreter, same discipline as
+    _selfimport's registries)."""
+
+    __slots__ = ("_layer", "_saved")
+
+    _KEY = "_mnemo2_envbind_registry_ours"
+
+    @classmethod
+    def _cell(cls):
+        reg = sys.modules.get(cls._KEY)
+        if reg is None:
+            import types as _t
+            reg = _t.ModuleType(cls._KEY)
+            setattr(reg, "CELL", [None])
+            sys.modules[cls._KEY] = reg
+        return getattr(reg, "CELL")
+
+    def __init__(self, binding):
+        cell = self._cell()
+        self._saved = cell[0]
+        # Layer over os.environ AT ENTRY (late reads consult the cell
+        # first and fall through, so ambient churn stays visible where a
+        # binding names nothing — no stale full-env freeze).
+        layer = dict(os.environ)
+        if binding:
+            if binding.get("dsn"):
+                layer["MNEMO2_PG_DSN"] = binding["dsn"]
+            if binding.get("schema"):
+                layer["MNEMO2_SCHEMA"] = binding["schema"]
+            if binding.get("shared_schema"):
+                layer["MNEMO2_SHARED_SCHEMA"] = binding["shared_schema"]
+        self._layer = layer
+
+    def __enter__(self):
+        self._cell()[0] = self._layer
+        return self
+
+    def __exit__(self, *exc):
+        self._cell()[0] = self._saved
+        return False
+
+
+def _envget(name, default=None):
+    """Env read honoring the innermost _envbind_ctx layer on THIS thread
+    (falls through to the ambient os.environ). pgconn consults the SAME
+    binding cell directly by sys.modules key (_mnemo2_impl_envbind is a
+    legacy envbind.py key and must NOT be reused here) — plugin_entry
+    never imports pgconn at cell level, so there is no import cycle on
+    either load route."""
+    cell = _envbind_ctx._cell()
+    layer = cell[0]
+    if layer is not None:
+        v = layer.get(name, _MISSING)
+        if v is not _MISSING:
+            return v
+    return os.environ.get(name, default)
+
+
+_MISSING = object()
+
+
 def _scoped(fn, binding):
     """Run fn under a dispatch binding (thread-local env override)."""
-    with _envbind.scoped(**(dict(binding) if binding else {})):
+    with _envbind_ctx(binding):
         return fn()
 
 
@@ -218,7 +292,7 @@ def _pre_llm_call(binding=None, **kw):
     """Render the injected memory block (vendor "Mnemosyne Memory"-style):
     top global recalls for the last user message. Env-gated off with
     MNEMO2_PREFETCH=0. Returns {'context': str} or None (host contract)."""
-    if os.environ.get("MNEMO2_PREFETCH", "1") == "0":
+    if _envget("MNEMO2_PREFETCH", "1") == "0":
         return None
     msg = kw.get("user_message") or kw.get("message") or ""
     if not isinstance(msg, str) or not msg.strip():

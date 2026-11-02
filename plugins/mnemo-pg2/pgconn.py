@@ -6,13 +6,16 @@ DSN/config resolution mirrors lcm2-pg pgconn (plan §4):
 Private schema: MNEMO2_SCHEMA > deterministic mnemo2_<agent> from HERMES_HOME.
 Shared schema: MNEMO2_SHARED_SCHEMA (default `shared`).
 
-P3L: every os.environ read below routes through envbind.eff() — the
-ambient env layered by the thread-local dispatch/pin override (a
-register()-time binding from plugin_entry, or a full-env test pin). The
-process-global env is never trusted lazily at connect time, so a rival
-agent's env churn can never redirect THIS agent's connection. No
-override installed (plain CLI / host single-agent use) => behaviour is
-byte-identical to the old direct-env code.
+P3L fix-close: every os.environ read below routes through _envget(),
+which consults the dispatch-time binding layer published by
+plugin_entry._envbind_ctx (register()-time per-agent resolution, module-
+global cell located by sys.modules key) before falling through to the
+ambient process env. No separate envbind module is imported: envbind.py
+was removed (its only consumer was a 3rd-party callsite that never
+materialised), and this file works identically whether or not
+plugin_entry is loaded at all (a direct import of pgconn alone — probes,
+standalone scripts — simply reads the ambient env). No override active
+=> behaviour is byte-identical to the old direct-env code.
 """
 from __future__ import annotations
 
@@ -26,17 +29,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-try:  # sibling import inside OUR body: _SelfImportFinder serves OUR file
-    import envbind as _envbind
-except ModuleNotFoundError:  # direct-by-path load (tests/probes)
-    import importlib.util as _ilu
-    _p = _ilu.spec_from_file_location(
-        "mnemo2_envbind_here", os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "envbind.py"))
-    if _p is None or _p.loader is None:  # pragma: no cover
-        raise ImportError("mnemo-pg2: envbind.py missing next to pgconn.py")
-    _envbind = _ilu.module_from_spec(_p)
-    _p.loader.exec_module(_envbind)
+_ENVBIND_CELL_KEY = "_mnemo2_envbind_registry_ours"
 
 _pools: dict[tuple, ConnectionPool] = {}
 _pools_lock = threading.Lock()
@@ -46,11 +39,21 @@ _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 def _envget(name, default=None):
-    ov = getattr(_envbind._tls, "env", None)
-    if ov is None:
-        return os.environ.get(name, default)
-    if name in ov:
-        return ov[name]
+    """Ambient env layered by the active dispatch binding (if any).
+
+    Locate the binding cell by sys.modules KEY only — never import
+    plugin_entry (that re-enters the plugin loaders; same discipline as
+    the _selfimport registries). Cell absent or no binding active =>
+    plain os.environ read."""
+    reg = sys.modules.get(_ENVBIND_CELL_KEY)
+    cell = getattr(reg, "CELL", None) if reg is not None else None
+    if cell is not None and cell[0] is not None:
+        try:
+            v = cell[0][name]
+        except KeyError:
+            pass
+        else:
+            return v
     return os.environ.get(name, default)
 
 
@@ -90,7 +93,7 @@ def agent_schema(explicit: str | None = None) -> str:
 
 
 def shared_schema() -> str:
-    s = os.environ.get("MNEMO2_SHARED_SCHEMA", "shared")
+    s = _envget("MNEMO2_SHARED_SCHEMA", "shared")
     if not _SCHEMA_RE.match(s):
         raise ValueError(f"invalid MNEMO2_SHARED_SCHEMA {s!r}")
     return s
@@ -184,7 +187,7 @@ class Conn:
         if self._want_ddl:
             self._cx.execute("SET search_path TO pg_catalog,pg_temp")
         self._schema_on_conn = self.schema
-        self._conn_env_shared = os.environ.get("MNEMO2_SHARED_SCHEMA")
+        self._conn_env_shared = _envget("MNEMO2_SHARED_SCHEMA")
         # OUR schema is bound session-locally ONLY (never SET ... LOCAL):
         # it is RESET in __exit__ before the connection returns to the
         # pool, so a shared-surface call can never read or write through
@@ -444,10 +447,19 @@ class Conn:
         # target names, pointing at the shared schema). Under the
         # pg_catalog-pinned table batch a bare CREATE VIEW would target
         # pg_catalog -> fail. Use the qualified bake form for those.
+        # CRITICAL (P3L misrouting): the bake target is THIS Conn's OWN
+        # schema, but the SHARED TARGET must be the shared schema as
+        # resolved at THIS connect (thread-local layer included), NOT
+        # ddl.py's ambient-env default. ddl.py is env-fallback by design;
+        # under concurrent agents the global env may hold a rival's
+        # MNEMO2_SHARED_SCHEMA — views baked then point at the wrong
+        # shared schema (silent cross-agent surface misrouting).
         if self.kind == "private":
             stmts = [s for s in stmts if "CREATE OR REPLACE VIEW shared_"
                      not in s] + list(
-                mod.bake_view_statements(self.schema))
+                mod.bake_view_statements(self.schema,
+                                         self._conn_env_shared
+                                         or shared_schema()))
         _in_tables = False
         for stmt in stmts:
             if stmt.startswith("CREATE TABLE"):

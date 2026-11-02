@@ -110,6 +110,12 @@ def test_concurrent_shared_surface(dsn, priv_schema, request):
             else:
                 os.environ["MNEMO2_SHARED_SCHEMA"] = prev
 
+    # R8/P3L: the two writers OVERLAP their pins by design (staggered
+    # starts widen neither: env is global, so ANY overlap is the race
+    # under test). The old join-first-then-start sequencing serialized
+    # the writers — the test verified nothing (green while a proven
+    # misrouting bug lived in the product). Concurrent starts are the
+    # point; a serialized version must be considered red.
     threads = [threading.Thread(target=sh_write, args=(priv_schema, "a")),
                threading.Thread(target=sh_write, args=(b, "b"))]
     for t in threads:
