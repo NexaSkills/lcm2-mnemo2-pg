@@ -140,3 +140,64 @@ r8 green 3x + full suite green => gate MET, no remaining failure.
 porcelain 0, pushed to origin/main.
 
 PHASE 3 COMPLETE
+## P3PIN addendum (token LCM2-MNEMO2-P3PIN)
+
+Scope note: a parallel P3L-resume dispatch (token LCM2-MNEMO2-P3L2)
+landed on this same checkout during this lane's run and committed
+72dc368/6f423e3 (env-pin TOCTOU fixes, its own green gate). Recorded per
+serialization rule; nothing reverted. Below is this lane's independent
+P3PIN evidence and root cause.
+
+### (2) Solo reproduction (deterministic)
+- scratch/probe_p3pin_shapeB.py / _windows.py (2 threads x 8 shared-kind
+  ddl conns on one fresh shared_test_* schema): ~30-40% of rounds fail
+  with psycopg.errors.UniqueViolation pg_type_typname_nsp_index
+  (typname=working_memory, typnamespace=<the shared_test schema>).
+- The table itself is NOT misplaced: after a failing round
+  pg_tables shows all 32 relations present in the target schema
+  (verified with a count query; the winning bootstrap committed them).
+  The loser's INSERT then hits the winner's table — the error is a
+  lost create-race, not a wrong-schema create.
+
+### (3) Root cause (evidence-backed)
+The advisory lock WAS taken correctly but released mid-bootstrap:
+_own_ddl ran CREATE EXTENSION IF NOT EXISTS vector followed by an
+unconditional commit(). pg_advisory_xact_lock is transaction-scoped, so
+that commit dropped the lock and the ENTIRE CREATE TABLE batch ran
+unserialized. Server-side proof (scratch/probe_p3pin_observe.py,
+pg_stat_activity + pg_locks polled at 30ms): at the moment of failure
+two backends (3091506/3091507) were both executing CREATE TABLE IF NOT
+EXISTS on the same fresh schema with zero advisory rows in pg_locks.
+A parallel pure-SQL probe pair (probe_p3pin_minimal_race,
+probe_p3pin_decide2) confirmed lock-held concurrent CREATE TABLE IF NOT
+EXISTS cannot collide when the lock actually spans the batch.
+
+Fix (pgconn._own_ddl): probe pg_catalog.pg_extension for 'vector'
+first; only when genuinely missing run the commit-isolated
+CREATE EXTENSION and RE-ACQUIRE the xact lock after that commit.
+Normal bootstrap = zero mid-batch commits = lock held unbroken.
+Ate its own dog food: monkeypatch equivalent
+(scratch/probe_p3pin_nocommit.py) 20/20 clean before the product edit.
+
+### Post-fix residual + second (harness) cause
+Full-suite (random order) then still failed sporadically with two
+non-pg_type signatures captured by in-process probes:
+KeyError('_mnemo2_impl_plugin_entry') (anchor TOCTOU: `key in
+sys.modules` then sys.modules[key] across a concurrent register()
+purge — closed by the parallel lane in _selfimport.py) and
+PoolTimeout (pinned by FakeCtx._pin's os.environ.clear window — also
+closed by that lane's conftest.py change). Both harness-side;
+consistent with this lane's earlier finding that the pg_type failure
+alone never survived the pgconn fix.
+
+### (4) Gate (this lane, at final tree = 6f423e3)
+- both target tests: 3x green (5 passed x3 over r8+cross-agent files)
+- shapeB 40 rounds 0 fail, windows 15 rounds 0 fail, nocommit probe 20/20
+- tests/mnemo2 full suite: solo 3x green + in-process 4 consecutive
+  runs exit 0 (scratch/gate_p3pin.py GATE: PASS)
+- tests/lcm2 full suite: 3x green (65 passed)
+- combined `pytest tests` is NOT a valid gate command on this repo:
+  lcm2/mnemo2 share test basenames without __init__.py (import-mismatch
+  collection error, pre-existing, unrelated to code).
+
+PHASE 3 COMPLETE (suite green per-directory, both target tests 3x green).
