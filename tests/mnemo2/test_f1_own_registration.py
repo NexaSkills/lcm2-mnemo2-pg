@@ -129,16 +129,26 @@ def hijack_boot(monkeypatch):
     lcm2 = _load("hermes_plugins.lcm2_pg", LCM2_INIT)
     c1 = Ctx()
     lcm2.register(c1)
-    # force the F-1 boot state deterministically: bare key = lcm2's file
-    # (whatever the context-engine scan left there in this interpreter)
-    lcm2_self = sys.modules.get("_lcm2_impl__selfimport") \
-        or sys.modules.get("hermes_plugins.lcm2_pg._selfimport")
-    if lcm2_self is not None:
-        sys.modules["_selfimport"] = lcm2_self
-        assert pathlib.Path(lcm2_self.__file__).parent == LCM2_INIT.parent
+    # Force the F-1 boot state DETERMINISTICALLY. Real host boot leaves
+    # the bare '_selfimport' key bound to lcm2-pg's file (proven: the CE
+    # scan imports plugins/lcm2-pg/_selfimport.py under the bare key, and
+    # register()'s purge only deletes OUR keys — never a pre-existing
+    # foreign one). Here we re-load lcm2's loader file under the bare key
+    # if the purge left nothing, reproducing the exact hijack precondition
+    # the regression test exists to police.
+    fake = _load("_selfimport", LCM2_INIT.parent / "_selfimport.py")
+    assert pathlib.Path(fake.__file__).parent == LCM2_INIT.parent
     mnemo2 = _load("hermes_plugins.mnemo_pg2", MNEMO2_INIT)
     c2 = Ctx()
     mnemo2.register(c2)
+    # F-1 post-state: if a bare '_selfimport' key is bound at all, it must
+    # not be mnemo-pg2's loader (mnemo-pg2 must never poison the shared key
+    # with its own file for lcm2-pg's boot paths).
+    si = sys.modules.get("_selfimport")
+    if si is not None:
+        f = getattr(si, "__file__", None)
+        assert f is None or pathlib.Path(f).parent != MNEMO2_INIT.parent, \
+            "mnemo-pg2 left its loader under the bare '_selfimport' key"
     return c1, c2
 
 
