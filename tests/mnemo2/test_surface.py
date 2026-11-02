@@ -11,8 +11,12 @@ import pathlib
 
 import pytest
 
-import tests.mnemo2.conftest as _c  # qualified: never the sibling suite's conftest
-register_plugin, FakeCtx = _c.register_plugin, _c.FakeCtx
+try:
+    import tests.mnemo2.conftest as _c  # qualified: never the sibling
+    register_plugin, FakeCtx = _c.register_plugin, _c.FakeCtx
+except ModuleNotFoundError:  # no tests/__init__.py: conftest is importable
+    import conftest as _c              # bare (pytest inserts this dir on
+    register_plugin, FakeCtx = _c.register_plugin, _c.FakeCtx
 
 HERE = pathlib.Path(__file__).resolve().parent
 WILDCARD = (HERE.parent / "mnemo2_vendor_tools_wildcard.txt").read_text()
