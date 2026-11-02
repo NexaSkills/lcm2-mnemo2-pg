@@ -276,3 +276,50 @@ def agent_factory(dsn):
         made.append(ctx)
         return ctx
     yield make
+
+
+# qa3 N-3 (combined-run isolation): sys.path[0] pinned to THIS suite's dir
+# per test, so bare `import conftest`/`import engine` inside a test bind
+# THIS plugin's files whatever order the combined `pytest tests` run
+# collected in. Restored after each test; no sys.modules keys touched.
+import pathlib as _iso_pathlib
+_ISO_DIR = str(_iso_pathlib.Path(__file__).resolve().parent)
+
+
+@pytest.fixture(autouse=True)
+def _own_dir_first():
+    import sys as _iso_sys
+    _saved = list(_iso_sys.path)
+    if _iso_sys.path[:1] != [_ISO_DIR]:
+        if _ISO_DIR in _iso_sys.path:
+            _iso_sys.path.remove(_ISO_DIR)
+        _iso_sys.path.insert(0, _ISO_DIR)
+    yield
+    _iso_sys.path[:] = _saved
+
+
+# fix6 N-3 (DEFINITIVE cross-suite arbitration, sibling half): install the
+# shared bare-key arbiter (see tests/lcm2/_bare_arbiter.py) so a combined
+# run behaves exactly like the two isolated runs. The finder is inert for
+# mnemo2-origin imports (their binding stays) and only rebinding-serving
+# for imports whose stack proves an lcm2 test origin. Shim: loads the
+# lcm2-side module by FILE (no bare-key collision with our own imports).
+def _install_bare_arbiter():
+    import importlib.util as _ilu
+    import pathlib
+    p = (pathlib.Path(__file__).resolve().parent.parent
+         / "lcm2" / "_bare_arbiter.py")
+    if not p.exists():
+        return
+    spec = _ilu.spec_from_file_location("_lcm2_bare_arbiter_shim", str(p))
+    if spec is None or spec.loader is None:
+        return
+    mod = _ilu.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        mod.install()
+    except Exception:  # pragma: no cover - hygiene must never break the run
+        pass
+
+
+_install_bare_arbiter()

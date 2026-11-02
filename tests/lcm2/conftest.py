@@ -158,3 +158,44 @@ def schema(dsn, request):
         with pgconn.connect(dsn, "public", ddl=True) as cx:
             cx.execute(f'DROP SCHEMA "{name}" CASCADE')
         pgconn.shutdown_pools()
+
+
+# qa3 N-3 (combined-run isolation): sys.path[0] pinned to THIS suite's dir
+# per test, so bare `import conftest`/`import engine` inside a test bind
+# THIS plugin's files whatever order the combined `pytest tests` run
+# collected in. Restored after each test; no sys.modules keys touched.
+import pathlib as _iso_pathlib
+
+import pytest as _iso_pytest
+
+_ISO_DIR = str(_iso_pathlib.Path(__file__).resolve().parent)
+
+
+@_iso_pytest.fixture(autouse=True)
+def _own_dir_first():
+    import sys as _iso_sys
+    _saved = list(_iso_sys.path)
+    if _iso_sys.path[:1] != [_ISO_DIR]:
+        if _ISO_DIR in _iso_sys.path:
+            _iso_sys.path.remove(_ISO_DIR)
+        _iso_sys.path.insert(0, _ISO_DIR)
+    yield
+    _iso_sys.path[:] = _saved
+
+
+# fix6 N-3 (DEFINITIVE cross-suite arbitration): shared bare keys
+# (engine/pgconn/ddl/...) are first-bind-wins process-wide; the sibling
+# suite's conftest proxies answer an lcm2 TEST module's lazy
+# `import engine` with mnemo's file ('_mnemo2_impl_engine' has no
+# LCM2Engine) because a test file is "foreign" to both suites' own
+# machinery. _bare_arbiter.install() adds one meta_path finder (once
+# per process, marker-guarded) that rebinds a shared bare name to OUR
+# file ONLY for imports whose stack proves a tests/lcm2 test origin;
+# mnemo2-test and host imports are left byte-untouched. Installed from
+# BOTH conftests so combined, lcm2-only and (via the mnemo conftest
+# shim) mnemo2-only runs all get identical behavior.
+try:
+    import _bare_arbiter as _ba
+    _ba.install()
+except Exception:  # pragma: no cover - hygiene must never break the run
+    pass
