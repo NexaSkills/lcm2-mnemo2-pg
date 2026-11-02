@@ -201,3 +201,25 @@ try:
     _ba.install()
 except Exception:  # pragma: no cover - hygiene must never break the run
     pass
+
+# fix6 N-3: the deterministic bare-key pin plugin (see _pin_plugin.py) —
+# active ONLY across lcm2's own tests, restored byte-exactly after each.
+try:
+    import _pin_plugin as _pp  # noqa: E402  (pytest picks up its hooks)
+    pytest_plugins = ()  # hooks are picked up via conftest module attrs:
+except Exception:
+    _pp = None
+
+# expose the pin helper for this conftest's own fixtures
+_own_module = getattr(_pp, "_pin", None) if _pp else None
+if _own_module is None:  # pragma: no cover
+    def _own_module(name):
+        import importlib
+        return importlib.import_module(name)
+
+# pin-plugin hooks re-exported AS CONTEST ATTRS: pytest only auto-loads
+# conftest.py files as hook providers; a sibling module (_pin_plugin.py)
+# is imported, not registered — so mirror its hooks here explicitly.
+if _pp is not None:
+    pytest_runtest_logstart = _pp.pytest_runtest_logstart
+    pytest_runtest_logfinish = _pp.pytest_runtest_logfinish
