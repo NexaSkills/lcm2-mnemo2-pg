@@ -25,8 +25,8 @@ def test_live_ops_mnemo2agent_shaped(dsn, tmp_path, request):
     import pgconn
     assert pgconn.agent_schema() == "mnemo2_mnemo2agent", pgconn.agent_schema()
 
-    from conftest import register_plugin
-    mod, ctx = register_plugin(dsn)  # no priv override — derivation path
+    import tests.mnemo2.conftest as _c
+    mod, ctx = _c.register_plugin(dsn)  # no priv override — derivation path
     marker = "liveops-" + uuid.uuid4().hex[:8]
 
     r = ctx.tools["mnemosyne_remember"]["handler"](
