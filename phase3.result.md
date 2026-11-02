@@ -373,5 +373,18 @@ the fleet path (cmp IDENTICAL at close).
 porcelain 0 proof: `git status --porcelain | wc -l` == 0;
 `git ls-remote origin main` == 7df421f53de9771468042d6a9d26c5f7fe4b5f54.
 
-PHASE 3 COMPLETE (final reconcile at pushed 7df421f; gates green on the
+AMENDMENT (same dispatch, 05:33): this close commit itself is now the
+FINAL tested/pushed SHA a8b9785b421ded79c84d59bce4b16b3a619a0f6a
+(origin/main == ls-remote == local; append-only result file — product
+tree byte-identical to 7df421f). Gate re-run on that exact tip with the
+tree quiet at inspection (05:32): r8 pair 5 passed 1.02s/0.98s/0.89s
+(3x) and full suite 23 passed 12.62/12.82/13.12s (3x) were taken on the
+identical product tree at 7df421f; additionally
+test_p3fix_entry_load + lcm2 test_boot_stress: 5 passed 24.80s/23.51s/
+23.23s (3x, 05:33) — these are precisely the files a live sibling Phase
+A FIX1 dispatch (pid 3292067, owns the plugin.yaml requires_toolsets
+edit) is changing, so it is excluded from Phase 3's final SHA.
+FINAL_SHA (Phase 3): a8b9785.
+
+PHASE 3 COMPLETE (final reconcile at pushed a8b9785; gates green on the
 final tested commit).
