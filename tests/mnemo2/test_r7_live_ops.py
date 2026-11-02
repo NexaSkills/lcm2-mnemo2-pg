@@ -25,10 +25,10 @@ def test_live_ops_mnemo2agent_shaped(dsn, tmp_path, request):
     import pgconn
     assert pgconn.agent_schema() == "mnemo2_mnemo2agent", pgconn.agent_schema()
 
-    import conftest as _c  # bare: THIS dir's conftest is on sys.path
-                           # (rootdir-inserted); a qualified 'tests.mnemo2'
-                           # import needs tests/__init__.py that does not
-                           # exist in-repo (collection error, qa3 N-3 run)
+    import tests.mnemo2.conftest as _c  # qualified: never the sibling suite's conftest
+                           # (tests/__init__.py package markers landed;
+                           # a bare 'conftest' import binds whichever
+                           # sibling conftest answered first, qa3 N-3)
     mod, ctx = _c.register_plugin(dsn)  # no priv override — derivation path
     marker = "liveops-" + uuid.uuid4().hex[:8]
 

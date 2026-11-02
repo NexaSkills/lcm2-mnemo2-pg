@@ -45,9 +45,10 @@ def test_no_probe_residue_schemas():
     # lcm2_test_* (conftest throwaway schemas that survived a crashed run),
     # lcm2_dbg_* (ad-hoc debug-session uuid schemas, e.g. lcm2_dbg_f86854e7c9
     # left by F1 debug). Catch all classes generically so no residue family
-    # slips past the sweep.
+    # slips past the sweep. qa4 classes added (gate-probe residue
+    # named *_qa4* and cross-DB throwaway families from the sibling suite).
     bad = [s for s in _psql("select nspname from pg_namespace").splitlines()
-           if re.match(r"^(probe_.*|lcm2_probe.*|lcm2_test_.*|lcm2_dbg_.*)$", s)]
+           if re.match(r"^(probe_.*|lcm2_probe.*|lcm2_dbg_.*|lcm2_test_.*|lcm2_qa4.*|mnemo2_qa4.*|mnemo2_test_.*|shared_test_.*)$", s)]
     assert bad == [], f"probe residue schemas remain: {bad}"
 
 

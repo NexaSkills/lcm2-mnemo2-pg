@@ -52,7 +52,7 @@ def dsn():
     # exactly this). Sweep classes are throwaway by construction; profile
     # schemas (lcm2_lcm2agent/lcm2_mnemo2agent/shared) never match.
     import re
-    _family = re.compile(r"^(lcm2_test_.*|lcm2_probe.*|probe_.*|lcm2_dbg_.*)$")
+    _family = re.compile(r"^(lcm2_test_.*|lcm2_probe.*|probe_.*|lcm2_dbg_.*|lcm2_qa4.*|mnemo2_qa4.*|mnemo2_test_.*|shared_test_.*)$")
     # qa3 N-3 (lcm2db half): legacy vendor-era TABLES in schema `public`
     # (mnemosyne-era leftovers, 40 of them on the shared instance) trip
     # pgconn's ddl public-busy guard in EVERY schema fixture below —

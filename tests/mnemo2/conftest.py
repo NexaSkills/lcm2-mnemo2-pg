@@ -79,7 +79,7 @@ def dsn():
     # its own (phase-2 lesson: a killed run skips teardown; residue then
     # false-fails a later run's tripwire). Profile schemas
     # (mnemo2_mnemo2agent/mnemo2_lcm2agent/shared) never match the family.
-    _family = re.compile(r"^(mnemo2_test_.*|mnemo2_probe.*|shared_test_.*|probe_.*)$")
+    _family = re.compile(r"^(mnemo2_test_.*|mnemo2_probe.*|shared_test_.*|probe_.*|lcm2_qa4.*|mnemo2_qa4.*)$")
     with pgconn.connect(BASE_DSN, "public", ddl=True) as cx:
         stale = [r["nspname"] for r in cx.query_dicts(
             "select nspname from pg_namespace")
