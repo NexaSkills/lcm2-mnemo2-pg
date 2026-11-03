@@ -76,5 +76,28 @@ def register(ctx):
     Import the bridge through the package (single file-anchored
     definition; the package anchors ITS bare siblings — engine, pgconn,
     tools, schemas — by file location before any of them import each
-    other)."""
-    ctx.register_context_engine(LCM2PgContextEngine())
+    other).
+
+    X-1 engine-slot precedence: when the legacy lcm-pg plugin is also
+    installed, the explicit rule in engine_slot.py decides the slot —
+    on a LOSS this entry logs the ONE yield line and skips a doomed
+    claim; on a WIN against an already-claimed slot it retires the rival
+    lease and claims here. Single-stack: unchanged, one claim."""
+    claim = LCM2PgContextEngine
+    if claim is None:
+        return
+    pkg = _package()
+    try:
+        slot = pkg.engine_slot
+    except Exception:
+        slot = None
+
+    def _slot_attempt():
+        ctx.register_context_engine(claim())
+
+    import logging
+    if slot is None:
+        _slot_attempt()
+    else:
+        slot.enforce_slot(ctx, "lcm2-pg", _slot_attempt,
+                          logging.getLogger("lcm2-pg"))

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 
 import engine as _engine
 import pgconn as _pgconn
@@ -222,24 +223,43 @@ class _envbind_ctx:
     every copy of this file in the interpreter, same discipline as
     _selfimport's registries)."""
 
-    __slots__ = ("_layer", "_saved")
+    __slots__ = ("_layer",)
 
     _KEY = "_mnemo2_envbind_registry_ours"
+    _TLS = threading.local()
+
+    @classmethod
+    def _stack(cls):
+        # THREAD-LOCAL stack (P3L2): the earlier design kept one
+        # process-global cell slot, so two agents dispatching on
+        # different threads clobbered each other's layer — thread B read
+        # thread A's binding (cross-agent schema misrouting under
+        # concurrent register/dispatch, r8 class). A per-thread stack is
+        # immune to that race by construction; nesting within a thread
+        # still restores correctly via push/pop discipline.
+        st = getattr(cls._TLS, "stack", None)
+        if st is None:
+            st = []
+            cls._TLS.stack = st
+        return st
 
     @classmethod
     def _cell(cls):
+        # Registry module in sys.modules under _KEY: exposes top_layer()
+        # (THIS thread's innermost layer or None) for readers like
+        # pgconn._envget that must not import this file.
         reg = sys.modules.get(cls._KEY)
         if reg is None:
             import types as _t
             reg = _t.ModuleType(cls._KEY)
-            setattr(reg, "CELL", [None])
+            setattr(reg, "top_layer",
+                    lambda: (cls._stack() or [None])[-1])
             sys.modules[cls._KEY] = reg
-        return getattr(reg, "CELL")
+        return reg
 
     def __init__(self, binding):
-        cell = self._cell()
-        self._saved = cell[0]
-        # Layer over os.environ AT ENTRY (late reads consult the cell
+        _envbind_ctx._cell()  # forces the registry module into existence
+        # Layer over os.environ AT ENTRY (late reads consult the layer
         # first and fall through, so ambient churn stays visible where a
         # binding names nothing — no stale full-env freeze).
         layer = dict(os.environ)
@@ -253,25 +273,29 @@ class _envbind_ctx:
         self._layer = layer
 
     def __enter__(self):
-        self._cell()[0] = self._layer
+        self._stack().append(self._layer)
         return self
 
     def __exit__(self, *exc):
-        self._cell()[0] = self._saved
+        st = self._stack()
+        # pop OUR layer even if a nested call misbalanced the stack
+        if st and st[-1] is self._layer:
+            st.pop()
+        elif self._layer in st:
+            st.remove(self._layer)
         return False
 
 
 def _envget(name, default=None):
     """Env read honoring the innermost _envbind_ctx layer on THIS thread
-    (falls through to the ambient os.environ). pgconn consults the SAME
-    binding cell directly by sys.modules key (_mnemo2_impl_envbind is a
-    legacy envbind.py key and must NOT be reused here) — plugin_entry
-    never imports pgconn at cell level, so there is no import cycle on
-    either load route."""
-    cell = _envbind_ctx._cell()
-    layer = cell[0]
-    if layer is not None:
-        v = layer.get(name, _MISSING)
+    (falls through to the ambient os.environ). The binding lives on a
+    thread-local stack (_mnemo2_envbind_registry_ours); the legacy
+    envbind.py key _mnemo2_impl_envbind must NOT be reused here.
+    plugin_entry never imports pgconn at cell level, so there is no
+    import cycle on either load route."""
+    stack = _envbind_ctx._stack()
+    if stack:
+        v = stack[-1].get(name, _MISSING)
         if v is not _MISSING:
             return v
     return os.environ.get(name, default)
@@ -370,10 +394,20 @@ def register(ctx, engine_factory=None):
     writes mid-call.
     """
     names = _wildcard_names()
+    # P3L2: resolve EXPLICITLY through the env funnel (_envget = binding
+    # layer if one is active on this thread, else ambient env). NOTE:
+    # pgconn.default_dsn()/agent_schema()/shared_schema() read os.environ
+    # DIRECTLY by design (they are the funnel's bottom rung); calling
+    # them here would blind the register-time capture to an active
+    # dispatch binding (e.g. a hook-internal re-register), which is the
+    # misrouting class this lane exists to kill.
     try:
-        binding = {"dsn": _pgconn.default_dsn(),
-                   "schema": _pgconn.agent_schema(),
-                   "shared_schema": _pgconn.shared_schema()}
+        dsn = _envget("MNEMO2_PG_DSN") or _pgconn.default_dsn()
+        schema = _envget("MNEMO2_SCHEMA") or _pgconn.agent_schema()
+        shared = _envget("MNEMO2_SHARED_SCHEMA", "shared")
+        binding = {"dsn": dsn, "schema": schema, "shared_schema": shared}
+        _pgconn._SCHEMA_RE.match(schema)  # invalid names => env-path fallback
+        _pgconn._SCHEMA_RE.match(shared)
     except Exception:  # invalid env names: dispatch falls back to env path
         binding = {}
     for name in names:

@@ -41,19 +41,23 @@ _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 def _envget(name, default=None):
     """Ambient env layered by the active dispatch binding (if any).
 
-    Locate the binding cell by sys.modules KEY only — never import
-    plugin_entry (that re-enters the plugin loaders; same discipline as
-    the _selfimport registries). Cell absent or no binding active =>
-    plain os.environ read."""
+    Locate the binding layer through the registry module's THREAD-LOCAL
+    stack (P3L2): plugin_entry publishes `top_layer()` on the registry
+    module object under _ENVBIND_CELL_KEY. Never import plugin_entry
+    (that re-enters the plugin loaders; same discipline as the
+    _selfimport registries). No binding active => plain os.environ
+    read."""
     reg = sys.modules.get(_ENVBIND_CELL_KEY)
-    cell = getattr(reg, "CELL", None) if reg is not None else None
-    if cell is not None and cell[0] is not None:
-        try:
-            v = cell[0][name]
-        except KeyError:
-            pass
-        else:
-            return v
+    top = getattr(reg, "top_layer", None) if reg is not None else None
+    if callable(top):
+        layer = top()
+        if layer is not None:
+            try:
+                v = layer[name]
+            except KeyError:
+                pass
+            else:
+                return v
     return os.environ.get(name, default)
 
 

@@ -134,61 +134,81 @@ def register(ctx, engine_factory=None):
     # stricter or absent, the call is harmless (warn-and-ignore / accepted).
     register_context_engine = getattr(ctx, "register_context_engine", None)
     if callable(register_context_engine):
-        # Try the raw duck-typed engine FIRST: test/host fakes that record
-        # it (ctx.context_engine) or accept anything get the real engine —
-        # no hidden wrapper. BUT the stock host gate is warn-and-ignore
-        # (returns None on isinstance failure, no exception), so an
-        # exception-only fallback never fires and the slot silently stays
-        # empty ('does not inherit from ContextEngine. Ignoring.'): check
-        # isinstance BEFORE registering and fall back to the shim bridge,
-        # which wraps the same engine in the ContextEngine subclass.
-        try:
-            from agent.context_engine import ContextEngine as _CE
-            _bridge_cls = None
+
+        def _slot_attempt():
+            # Try the raw duck-typed engine FIRST: test/host fakes that record
+            # it (ctx.context_engine) or accept anything get the real engine —
+            # no hidden wrapper. BUT the stock host gate is warn-and-ignore
+            # (returns None on isinstance failure, no exception), so an
+            # exception-only fallback never fires and the slot silently stays
+            # empty ('does not inherit from ContextEngine. Ignoring.'): check
+            # isinstance BEFORE registering and fall back to the shim bridge,
+            # which wraps the same engine in the ContextEngine subclass.
             try:
-                _here = os.path.dirname(os.path.abspath(__file__))
-                _ce_shim = _sys.modules.get("_lcm2_pg_bridge_ce_shim")
-                if _ce_shim is None or not getattr(_ce_shim, "LCM2PgContextEngine", None):
-                    import importlib.util as _u
-                    _sp = _u.spec_from_file_location(
-                        "_lcm2_pg_bridge_ce_shim",
-                        os.path.join(_here, "context_engine_shim.py"))
-                    _md = _u.module_from_spec(_sp)
-                    _sys.modules["_lcm2_pg_bridge_ce_shim"] = _md
-                    try:
-                        _sp.loader.exec_module(_md)
-                    except Exception:
-                        _sys.modules.pop("_lcm2_pg_bridge_ce_shim", None)
-                        raise
-                    _ce_shim = _md
-                _bridge_cls = _ce_shim.LCM2PgContextEngine
-            except Exception as exc:
-                logger.debug("lcm2-pg bridge class unavailable: %s", exc)
+                from agent.context_engine import ContextEngine as _CE
                 _bridge_cls = None
-            _e = factory() if _bridge_cls is None else _bridge_cls(
-                dsn=getattr(factory(), "dsn", None),
-                schema=getattr(factory(), "schema", None))
-            # Prefer registering the factory's own engine (host fakes
-            # assert identity), else the bridge wrapper (real subclass,
-            # passes the host's isinstance gate). Register BOTH when the
-            # fake/host slot is permissive: second call overwrites slot,
-            # tools/hooks unaffected.
-            raw_ok = isinstance(_e, _CE)
-            register_context_engine(_e if raw_ok else factory())
-            if not raw_ok:
-                # bridge failed to construct: try raw anyway (host may
-                # still accept it; warn-and-ignore is its problem, our
-                # tools/hooks work regardless)
+                try:
+                    _here = os.path.dirname(os.path.abspath(__file__))
+                    _ce_shim = _sys.modules.get("_lcm2_pg_bridge_ce_shim")
+                    if _ce_shim is None or not getattr(_ce_shim, "LCM2PgContextEngine", None):
+                        import importlib.util as _u
+                        _sp = _u.spec_from_file_location(
+                            "_lcm2_pg_bridge_ce_shim",
+                            os.path.join(_here, "context_engine_shim.py"))
+                        _md = _u.module_from_spec(_sp)
+                        _sys.modules["_lcm2_pg_bridge_ce_shim"] = _md
+                        try:
+                            _sp.loader.exec_module(_md)
+                        except Exception:
+                            _sys.modules.pop("_lcm2_pg_bridge_ce_shim", None)
+                            raise
+                        _ce_shim = _md
+                    _bridge_cls = _ce_shim.LCM2PgContextEngine
+                except Exception as exc:
+                    logger.debug("lcm2-pg bridge class unavailable: %s", exc)
+                    _bridge_cls = None
+                _e = factory() if _bridge_cls is None else _bridge_cls(
+                    dsn=getattr(factory(), "dsn", None),
+                    schema=getattr(factory(), "schema", None))
+                # Prefer registering the factory's own engine (host fakes
+                # assert identity), else the bridge wrapper (real subclass,
+                # passes the host's isinstance gate). Register BOTH when the
+                # fake/host slot is permissive: second call overwrites slot,
+                # tools/hooks unaffected.
+                raw_ok = isinstance(_e, _CE)
+                register_context_engine(_e if raw_ok else factory())
+                if not raw_ok:
+                    # bridge failed to construct: try raw anyway (host may
+                    # still accept it; warn-and-ignore is its problem, our
+                    # tools/hooks work regardless)
+                    try:
+                        register_context_engine(factory())
+                    except Exception:
+                        pass
+            except Exception:
+                raw_ok = False
                 try:
                     register_context_engine(factory())
                 except Exception:
                     pass
+
+        # X-1 engine-slot precedence: when BOTH lcm-pg (legacy) and this
+        # plugin are installed, the winner is decided by the explicit rule
+        # in engine_slot.py (CONTEXT_ENGINE marker > context.engine config
+        # > LCM2_PG_DSN > :54331 probe > legacy default) — NOT by plugin
+        # load order. Single-stack hosts: enforce_slot short-circuits and
+        # _slot_attempt runs exactly as before (zero behavior change).
+        # On a WIN where the rival already holds the slot, enforce_slot
+        # retires the rival's lease and re-runs _slot_attempt; on a LOSS
+        # it logs the ONE yield line and skips the doomed claim.
+        try:
+            _es = anchor("engine_slot")
         except Exception:
-            raw_ok = False
-            try:
-                register_context_engine(factory())
-            except Exception:
-                pass
+            _es = None
+        if _es is None:
+            _slot_attempt()
+        else:
+            _es.enforce_slot(ctx, "lcm2-pg", _slot_attempt, logger)
 
     # hooks
     register_hook = getattr(ctx, "register_hook", None)
