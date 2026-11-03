@@ -86,15 +86,18 @@ else
   set_param() {  # set_param KEY VALUE — in-place update or append
     local k=$1 v=$2
     if grep -q "^${k}=" "$PENV"; then
-      # NB: ${v%$'\n'} guard is load-bearing. A value that ever carries a
-      # trailing newline (command substitution with echo) makes this sed's
-      # replacement end in a literal newline: the KEY= line then SWALLOWS
-      # the next line and the merged value is an unparseable URI
-      # ('extra key/value separator' at connect, fail-closed -> sqlite
-      # fallback = the trade/warren pure-sqlite class). No $() feeds this
-      # today; the guard makes the silent-corruption path structurally
-      # impossible regardless of caller.
-      sed -i "s|^${k}=.*|${k}=${v%$'\n'}|" "$PENV"
+      # \n guard is load-bearing. The substitution payload must never carry
+      # a NEWLINE: not from the value (a trailing \n from $() makes the KEY=
+      # line swallow the NEXT line — the trade/warren sqlite-fallback class),
+      # nor from the RHS itself. An existing line that already swallowed its
+      # following lines (multi-line match) previously re-inserted the whole
+      # blob with every &-free sed replacement — self-compounding corruption
+      # (beez/default proof 2026-11-04: one LCM2_PG_DSN line grew to carry
+      # the value three times across swallowed lines; the merged value is an
+      # unparseable URI, fail-closed -> legacy fallback). Delete every line
+      # of the match first, then append the single clean KEY=value line.
+      sed -i "/^${k}=/d" "$PENV"
+      printf '%s=%s\n' "$k" "${v//$'\n'/}" >> "$PENV"
     else
       printf '%s=%s\n' "$k" "${v%$'\n'}" >> "$PENV"
     fi
