@@ -7,6 +7,24 @@ import re
 import sys
 import threading
 
+# X-4 fail-close (must precede the psycopg imports): a missing psycopg
+# raises a NAMED ImportError right here instead of feeding the plugin
+# loader's 10s 'load timed out' lane (trade X-4 class). File-anchored:
+# never resolves another plugin's copy by bare key.
+def _x4_depcheck():
+    import importlib.util as _u
+    _f = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "_depcheck.py")
+    _s = _u.spec_from_file_location("_lcm2_pg_depcheck_x4", _f)
+    if _s is None or _s.loader is None:  # pragma: no cover
+        return  # shim unreadable: the psycopg import below names itself
+    _m = _u.module_from_spec(_s)
+    _s.loader.exec_module(_m)
+    _m.require_psycopg()
+
+
+_x4_depcheck()
+
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
