@@ -110,6 +110,33 @@ else
   LINK_DIRS=("$HERMES_BASE/profiles/$AGENT/plugins")
   echo "NOTE: global dir $HERMES_BASE/plugins untouched (default; shared-host install: LCM2_ONBOARD_GLOBAL=1)"
 fi
+# C2RESID leg 1 — the CONTEXT-ENGINE capture symlink, authored over the
+# SAME LINK_DIRS scoping as the plugin symlinks below. Route 1 of the
+# host's engine selector (agent_init._select_context_engine ->
+# plugins.context_engine.load_context_engine) resolves
+# context.engine=lcm2-pg ONLY under $HERMES_HOME/plugins/ — and on a
+# multiplexed gateway get_hermes_home() is scoped PER PROFILE (contextvar
+# in gateway/run.py _profile_runtime_scope). Without a per-PROFILE
+# capture dir the routed turn resolves NOTHING on route 1 silently
+# (debug-only), and a profile without the general plugin enabled lands
+# on the per-turn "Context engine 'lcm2-pg' not found" warning — the
+# C2 residual class (manny lane, 2026-11-03 22:08:28 re-emit). This
+# mirrors the Nov-1 launch-scope precedent (global dir link
+# $HERMES_BASE/plugins/context_engine/lcm2-pg); per-profile is the
+# profile-scoped form of the same symlink, NOT new machinery.
+# NOTE: engine VALUE stays via hermes config set / engine_engine_align.sh
+# (the line above sets the legacy default; align flips it to lcm2-pg).
+for d in "${LINK_DIRS[@]}"; do
+  if run mkdir -p "$d/context_engine"; then
+    if run ln -sfn "$REPO/plugins/context_engine/lcm2-pg" "$d/context_engine/lcm2-pg"; then
+      echo "  capture dir: $d/context_engine/lcm2-pg -> repo"
+    else
+      echo "FATAL: capture-dir symlink refused under $d (route-1 engine resolution will fail for this profile)" >&2; exit 1
+    fi
+  else
+    echo "FATAL: cannot create $d/context_engine (route-1 engine resolution will fail for this profile)" >&2; exit 1
+  fi
+done
 for d in "${LINK_DIRS[@]}"; do
   mkdir -p "$d"
   run ln -sfn "$REPO/plugins/lcm2-pg"   "$d/lcm2-pg"
