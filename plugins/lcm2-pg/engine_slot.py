@@ -193,8 +193,27 @@ def _instance_reachable(timeout: float = 0.35) -> bool:
     sock = socket.socket(family, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
-        sock.connect(host if unixy else (host, port))
-        return True
+        if not unixy:
+            sock.connect((host, port))
+            return True
+        # Unix side: LCM2_PG_HOST is normally the socket DIRECTORY
+        # (Postgres listens on <dir>/.s.PGSQL.<port>), NOT a listener
+        # itself — a raw connect to the dir is ECONNREFUSED against a
+        # LIVE instance (X-1 probe bug, tessa C2GATE-2117). Try the
+        # direct path first (real socket file / Abstract path with
+        # leading ':'), then the dir-form listener socket.
+        candidates = (host, host.rstrip("/") + f"/.s.PGSQL.{port}")
+        for path in candidates:
+            try:
+                sock.connect(path)
+                return True
+            except OSError:
+                if path is candidates[-1]:
+                    raise
+                sock.close()  # a failed AF_UNIX connect invalidates the sock
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+        return False
     except OSError:
         return False
     finally:

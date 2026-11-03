@@ -24,6 +24,7 @@ import logging
 import os
 import socket
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))          # tests/lcm2
 ROOT = os.path.dirname(os.path.dirname(HERE))              # repo root
@@ -251,6 +252,58 @@ def test_dead_probe_legacy_default_wins_both_orders():
         assert _name_of(mgr) == "lcm", f"order={order} got {_name_of(mgr)}"
     _both(mod, {"LCM2_PG_HOST": "/nonexistent-x1/probe.sock",
                 "LCM2_PG_PORT": "59999"}, check)
+
+
+def test_probe_socket_dir_live_wins_both_orders():
+    """X-1 probe fix (C2FIX1-MIKE-2130): a Unix LCM2_PG_HOST that is a
+    socket DIRECTORY with a live listener at <dir>/.s.PGSQL.<port> must
+    resolve NEW. Pre-fix the probe connected to the bare dir path =>
+    ECONNREFUSED against a LIVE instance => false legacy default."""
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    with tempfile.TemporaryDirectory(prefix="x1dirprobe-") as d:
+        port = str(abs(hash(d)) % 10000 + 50000)
+        srv.bind(os.path.join(d, f".s.PGSQL.{port}"))
+        srv.listen(8)
+        try:
+            mod = _load_engine_slot()
+            # direct probe-level assertion (not masked by _both's cache)
+            with _Env():
+                os.environ["LCM2_PG_HOST"] = d
+                os.environ["LCM2_PG_PORT"] = port
+                assert mod._instance_reachable() is True
+            def check(mgr, order):
+                assert _name_of(mgr) == "lcm2-pg", f"order={order}"
+            _both(mod, {"LCM2_PG_HOST": d, "LCM2_PG_PORT": port}, check)
+        finally:
+            srv.close()
+
+
+def test_probe_socket_file_still_works():
+    """Regression guard for the other Unix form: host = the socket FILE
+    itself (no dir form) must still resolve reachable."""
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    with tempfile.TemporaryDirectory(prefix="x1sockprobe-") as d:
+        path = os.path.join(d, "pg.sock")
+        srv.bind(path)
+        srv.listen(8)
+        try:
+            mod = _load_engine_slot()
+            with _Env():
+                os.environ["LCM2_PG_HOST"] = path
+                assert mod._instance_reachable() is True
+        finally:
+            srv.close()
+
+
+def test_probe_dead_dir_legacy():
+    """Socket dir exists but nothing listens on .s.PGSQL.<port> =>
+    still the negative answer (legacy default path unchanged)."""
+    mod = _load_engine_slot()
+    with tempfile.TemporaryDirectory(prefix="x1deaddir-") as d:
+        with _Env():
+            os.environ["LCM2_PG_HOST"] = d
+            os.environ["LCM2_PG_PORT"] = "59999"
+            assert mod._instance_reachable() is False
 
 
 def test_retire_route_fires_once():
