@@ -43,9 +43,13 @@ def _dsn(dsn):
 
 def _public_tables(pg, dsn):
     with pg.connect(_dsn(dsn), "public") as cx:
-        # set(...) of dicts is unhashable; build a real set of names.
-        return {r["tablename"] for r in cx.query_dicts(
-            "select tablename from pg_tables where schemaname='public'")}
+        # query_dicts may yield dicts OR plain tuples (row-factory varies by
+        # which suite's pgconn bound first in a combined run); normalize to
+        # a set of names (column 0 is the table name either way).
+        return {
+            r["tablename"] if isinstance(r, dict) else r[0]
+            for r in cx.query_dicts(
+                "select tablename from pg_tables where schemaname='public'")}
 
 
 def test_public_ddl_tripwire_blocks_then_sweep_clears(dsn):
@@ -59,7 +63,7 @@ def test_public_ddl_tripwire_blocks_then_sweep_clears(dsn):
         # If the guard is disabled (a suite patched it out for unrelated
         # combined-run reasons), the table landed — that is still residue
         # the sweep must catch; assert via the sweep leg below.
-        landed = TABLE in {r["tablename"] for r in _public_tables(pg, dsn)}
+        landed = TABLE in _public_tables(pg, dsn)
         guard_fired = False
     except Exception as e:
         guard_fired = any(
@@ -76,5 +80,5 @@ def test_public_ddl_tripwire_blocks_then_sweep_clears(dsn):
         subprocess.run([sys.executable, str(sweep), _dsn(dsn)],
                        check=True, capture_output=True, timeout=120)
     after = _public_tables(pg, dsn)
-    assert TABLE not in {r["tablename"] for r in after}, \
+    assert TABLE not in after, \
         f"residue sweep left public.{TABLE}: {sorted(after)}"
