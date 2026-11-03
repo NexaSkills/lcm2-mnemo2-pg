@@ -90,10 +90,35 @@ def default_dsn() -> str:
     return f"dbname=mnemo2db host={host} port={port} user={user}"
 
 
+def _live_home() -> str:
+    """B2 leak-fix: Hermes home through the HOST's funnel (context-local
+    override -> HERMES_HOME env -> platform default; hermes_constants.
+    get_hermes_home). A multiplexed gateway scopes each routed turn with a
+    CONTEXTVAR and deliberately never touches os.environ (gateway/run.py
+    _profile_runtime_scope), so a raw env HERMES_HOME read sees only the
+    LAUNCH home and every routed profile's writes collapse into
+    mnemo2_default. The env bind layer (_envget) still wins when a dispatch
+    binding or MNEMO2_SCHEMA names an explicit home. Host funnel absent
+    (plugin loaded outside Hermes): today's env behaviour, unchanged."""
+    layer = _envget("HERMES_HOME", "")
+    if layer:  # an explicit binding layer (or ambient env) is authoritative
+        return layer
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        if home:
+            return str(home)
+    except Exception:  # pragma: no cover - no Hermes on this interpreter
+        pass
+    return ""
+
+
 def _profile_name() -> str:
-    """Deterministic agent name: HERMES_HOME profile dir, else 'default'.
-    NEVER a pinned profile list (fleet practice, same as lcm2-pg)."""
-    hh = _envget("HERMES_HOME", "")
+    """Deterministic agent name: the LIVE profile home (contextvar-aware,
+    see _live_home), else 'default'. NEVER a pinned profile list (fleet
+    practice, same as lcm2-pg)."""
+    hh = _live_home()
     if hh:
         base = os.path.basename(hh.rstrip("/"))
         if base.startswith("profiles/"):  # pragma: no cover

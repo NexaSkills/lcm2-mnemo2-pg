@@ -49,10 +49,23 @@ def default_dsn() -> str:
 
 
 def agent_schema(explicit: str | None = None) -> str:
-    """Schema derived per profile: lcm2_<basename(HERMES_HOME)> (never pinned)."""
+    """Schema derived per profile: lcm2_<basename(LIVE HERMES_HOME)> (never
+    pinned). B2 leak-fix: the home comes from hermes_constants.get_hermes_home
+    (context-local override -> HERMES_HOME env -> platform default) so a
+    multiplexed gateway's routed turn — scoped by CONTEXTVAR, os.environ
+    untouched (gateway/run.py _profile_runtime_scope) — resolves to ITS OWN
+    profile instead of collapsing every route into lcm2_default."""
     s = explicit or os.environ.get("LCM2_AGENT_SCHEMA")
     if not s:
-        home = os.environ.get("HERMES_HOME", "")
+        home = ""
+        try:
+            from hermes_constants import get_hermes_home
+
+            h = get_hermes_home()
+            if h:
+                home = str(h)
+        except Exception:  # no Hermes on this interpreter: env behaviour
+            home = os.environ.get("HERMES_HOME", "")
         base = os.path.basename(home.rstrip("/")) if home else "default"
         s = f"lcm2_{re.sub(r'[^a-z0-9_]', '_', base.lower())}"
     if not _SCHEMA_RE.match(s):
