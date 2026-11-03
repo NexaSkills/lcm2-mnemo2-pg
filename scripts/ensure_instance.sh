@@ -61,8 +61,12 @@ for db in lcm2db mnemo2db; do
   $PSQL -tc "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null | grep -q 1 \
     || { $PSQL -c "CREATE DATABASE $db OWNER $ROLE" >>"$LOG" 2>&1; note "created db $db"; }
 done
-$PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS lcm2_lcm2agent"   >/dev/null 2>&1
-$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS mnemo2_mnemo2agent" >/dev/null 2>&1
+# S6 (beez cleanup, 2026-11-03): the agent-shell schemas for the DELETED
+# test profiles (lcm2agent/mnemo2agent) were hardcoded here, so the watchdog
+# re-created them within <=2 min of every drop — residual schemas could never
+# stay absent. Per-profile schemas are owned by the plugins' own bootstrap
+# (schema_for_profile on boot), never by this watchdog. Surviving fixed
+# schema: shared. :54329 cluster untouched.
 $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared"           >/dev/null 2>&1
 if $PSQL -d postgres -Atc 'select 1' >/dev/null 2>&1; then note "OK instance healthy"; else note "FAIL instance unreachable"; fi
 tail -200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
