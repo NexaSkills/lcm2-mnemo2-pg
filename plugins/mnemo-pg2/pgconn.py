@@ -97,12 +97,13 @@ def _live_home() -> str:
     CONTEXTVAR and deliberately never touches os.environ (gateway/run.py
     _profile_runtime_scope), so a raw env HERMES_HOME read sees only the
     LAUNCH home and every routed profile's writes collapse into
-    mnemo2_default. The env bind layer (_envget) still wins when a dispatch
-    binding or MNEMO2_SCHEMA names an explicit home. Host funnel absent
-    (plugin loaded outside Hermes): today's env behaviour, unchanged."""
-    layer = _envget("HERMES_HOME", "")
-    if layer:  # an explicit binding layer (or ambient env) is authoritative
-        return layer
+    mnemo2_default. Host funnel absent (plugin loaded outside Hermes):
+    today's env behaviour, unchanged.
+    B2 fix1 note: the funnel is consulted BEFORE the bind layer because
+    the bind layer is a dict COPY of os.environ taken at entry
+    (_envbind_ctx) — it always carries the LAUNCH home, so preferring it
+    for the home key silently disables the fix inside a routed turn.
+    MNEMO2_SCHEMA pins still win via agent_schema's own explicit check."""
     try:
         from hermes_constants import get_hermes_home
 
@@ -111,7 +112,7 @@ def _live_home() -> str:
             return str(home)
     except Exception:  # pragma: no cover - no Hermes on this interpreter
         pass
-    return ""
+    return _envget("HERMES_HOME", "")
 
 
 def _profile_name() -> str:

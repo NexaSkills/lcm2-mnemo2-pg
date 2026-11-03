@@ -263,6 +263,22 @@ class _envbind_ctx:
         # first and fall through, so ambient churn stays visible where a
         # binding names nothing — no stale full-env freeze).
         layer = dict(os.environ)
+        # B2 fix1: the bind layer must NOT shadow the host's context-local
+        # home (router scopes routed turns via CONTEXTVAR, os.environ
+        # untouched). A dict copy always carries the LAUNCH HERMES_HOME,
+        # which the fixed pgconn._live_home consults as fallback and
+        # host-funnel-less readers read directly; drop it when it equals
+        # the process/launch value so the funnel's override wins. Pinning
+        # an explicit non-launch home via a binding stays untouched.
+        if "HERMES_HOME" in layer:
+            try:
+                import hermes_constants as _hc
+                if _hc.get_hermes_home_override() is None and (
+                        os.environ.get("HERMES_HOME", "").strip()
+                        == layer["HERMES_HOME"]):
+                    del layer["HERMES_HOME"]
+            except Exception:  # pragma: no cover - no Hermes present
+                pass
         if binding:
             if binding.get("dsn"):
                 layer["MNEMO2_PG_DSN"] = binding["dsn"]
