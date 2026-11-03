@@ -63,6 +63,21 @@ $PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS lcm2_$AGENT"
 $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS mnemo2_$AGENT"
 $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared"
 
+# Launch-scope schema leg (C2RESID2S): the ROOT gateway process bootstraps
+# the engine under schema lcm2_<basename(HERMES_HOME)> (pgconn.agent_schema,
+# env-less profiles). When that schema is absent, EVERY engine constructor
+# on every route dies inside bootstrap with InvalidSchemaName ("no schema
+# has been selected to create in") — the capture links and the loader all
+# check out and the engine still never registers. Author it once here,
+# idempotent, so the root/launch surface bootstraps like a profile does.
+_root_schema="lcm2_$(basename "$HERMES_BASE" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_' '_' | sed 's/_$//')"
+case "$_root_schema" in
+  lcm2_|lcm2__) echo "launch schema name degenerate (skip): $_root_schema" ;;
+  *) $PSQL -d lcm2db -c "CREATE SCHEMA IF NOT EXISTS $_root_schema" 2>/dev/null \
+       && echo "launch schema $_root_schema OK" \
+       || echo "WARN launch schema $_root_schema not created (root surface would hit InvalidSchemaName)" ;;
+esac
+
 echo "== 3. profile .env params (file-editable surface) =="
 if [ "$DRY" = "--dry-run" ]; then
   echo "DRY: append LCM2_*/MNEMO2_* params to $PENV"
