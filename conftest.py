@@ -21,6 +21,21 @@ def _this_db():
     return "lcm2db" if "lcm2db" in str(getattr(sys.modules.get("conftest"), "BASE_DSN", "")) else None
 
 
+def pytest_ignore_collect(collection_path, config):
+    # SUITEGREEN-MIKE-0810: scratch/ is gitignored debris, incl.
+    # scratch/quarantine/<profile>/ snapshots of FULL hermes profiles whose
+    # skills/ ship their own tests/ dirs. Bare `pytest` (rootdir=repo) used
+    # to collect those files under a DIFFERENT rootdir/conftest chain than
+    # the snapshots were authored for -> import-mismatch collection errors.
+    # Never collect quarantined profiles or scratch trees, under any
+    # invocation form.
+    p = str(collection_path)
+    root = str(config.rootpath)
+    if root and (p + "/").startswith(root + "/scratch/"):
+        return True
+    return None
+
+
 def pytest_fixture_setup(request):
     # Before any schema-minting fixture runs, public must be empty in BOTH
     # dbs (mnemo's shared-view bake repopulates public live otherwise).
