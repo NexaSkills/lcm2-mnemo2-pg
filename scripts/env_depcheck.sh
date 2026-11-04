@@ -32,17 +32,56 @@
 # (fail-closed line names the host file to edit and the command).
 set -uo pipefail
 HB=${HERMES_BASE:-${HERMES_REAL_HOME:-$HOME}/.hermes}
+# W3TKT-MIKE-1220 #4: single /proc root for every probe below (production
+# default /proc; targeted tests point it at a fake /proc tree — the ONLY
+# test hook this script gains, the resolution logic itself is unchanged).
+PROC_ROOT=${PROC_DIR:-/proc}
 # Resolve the gateway main pid WITHOUT systemctl (this script runs inside
 # gateway turns too; the literal "systemctl ... hermes-gateway" in a
 # command trips the in-gateway restart guard — fleet lint lesson). The
 # pidfile is maintained by the gateway itself; /proc scan is the fallback.
 PID=""
-for pf in "$HB"/gateway.pid; do
-  [ -r "$pf" ] || continue
+# W3TKT-MIKE-1220 #4: the running gateway knows its OWN home — derive the
+# pidfile from /proc/<pid>/environ HERMES_HOME of the live gateway process
+# FIRST (a gateway started with a HERMES_HOME that differs from $HB — env
+# override, a root launch with a custom home — keeps its pidfile under ITS
+# own home, and the $HB path below would miss it entirely). The former
+# primary leg ($HB/gateway.pid) stays as the documented fallback, and the
+# /proc scan last. Same pid-record parsing on either path.
+_read_pidfile() {  # _read_pidfile <path> -> pid on stdout ("" = none/absent)
+  local pf=$1 p
+  [ -r "$pf" ] || return 0
   # pidfile is JSON ({"pid": N, "kind": "hermes-gateway", ...}); take the
   # "pid" field ONLY (a blind digit-strip concatenated pid+start_time).
   p=$(sed -n 's/.*"pid"[^0-9]*\([0-9][0-9]*\).*/\1/p' "$pf" | head -1)
-  [ -n "$p" ] && [ -d "/proc/$p" ] && { PID=$p; break; }
+  [ -n "$p" ] && [ -d "$PROC_ROOT/$p" ] && printf '%s' "$p"
+}
+for cand in "$PROC_ROOT"/[0-9]*/cmdline; do
+  [ "$cand" = "$PROC_ROOT/$$/cmdline" ] && continue
+  [ -r "$cand" ] || continue
+  # W3TKT-MIKE-1220 #4: match the LAUNCHER form too — the systemd
+  # ExecStart runs `python -I -c '<launcher>' gateway run`, so "gateway"
+  # and "run" can sit inside ONE -c payload rather than as separate argv
+  # words (the old word-only scan saw nothing on beez while the $HB
+  # pidfile leg carried it; with HERMES_BASE != real home even that leg
+  # is gone and the script died RED "gateway pid not found").
+  cl=$(tr '\0' '\n' < "$cand" 2>/dev/null) || continue
+  printf '%s\n' "$cl" | grep -q gateway || continue
+  printf '%s\n' "$cl" | grep -qx run || printf '%s\n' "$cl" | grep -Eq 'gateway run|-c .*\bgateway\b.*\brun\b' || continue
+  pid=${cand#"$PROC_ROOT"/}; pid=${pid%/cmdline}
+  h=$(tr '\0' '\n' < "$PROC_ROOT/$pid/environ" 2>/dev/null | sed -n 's/^HERMES_HOME=//p' | head -1)
+  [ -n "$h" ] || continue
+  p=$(_read_pidfile "${h%/}/gateway.pid")
+  [ -n "$p" ] || continue
+  # The running process must carry its home's OWN pidfile record —
+  # a pid that belongs to a DIFFERENT gateway is never borrowed
+  # (fleet lesson: a test/fake home must never borrow a live host's pid).
+  [ "$p" = "$pid" ] || continue
+  PID=$p; break
+done
+for pf in "$HB"/gateway.pid; do
+  p=$(_read_pidfile "$pf")
+  [ -n "$p" ] && { PID=$p; break; }
 done
 if [ -z "$PID" ]; then
   # /proc scan last (the pidfile is authoritative when present): match
@@ -52,21 +91,22 @@ if [ -z "$PID" ]; then
   # borrow a live host's pid; fleet lesson from the same green->red bug).
   self=$$
   hb_norm=${HB%/}
-  for cand in /proc/[0-9]*/cmdline; do
-    [ "$(dirname "$cand")" = "/proc/$self" ] && continue
+  for cand in "$PROC_ROOT"/[0-9]*/cmdline; do
+    [ "$cand" = "$PROC_ROOT/$self/cmdline" ] && continue
+    [ -r "$cand" ] || continue
     tr '\0' '\n' < "$cand" 2>/dev/null | grep -qx gateway || continue
     tr '\0' '\n' < "$cand" 2>/dev/null | grep -qx run || continue
-    pid=${cand#/proc/}; pid=${pid%/cmdline}
-    h=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^HERMES_HOME=//p' | head -1)
+    pid=${cand#"$PROC_ROOT"/}; pid=${pid%/cmdline}
+    h=$(tr '\0' '\n' < "$PROC_ROOT/$pid/environ" 2>/dev/null | sed -n 's/^HERMES_HOME=//p' | head -1)
     [ "${h%/}" = "$hb_norm" ] || continue
     PID=$pid; break
   done
 fi
-[ -n "${PID:-}" ] && [ -d "/proc/$PID" ] || { echo "ENVDEPCHECK RED gateway pid not found (pidfile $HB/gateway.pid or /proc scan)" >&2; exit 2; }
-MAP=/proc/$PID/environ
+[ -n "${PID:-}" ] && [ -d "$PROC_ROOT/$PID" ] || { echo "ENVDEPCHECK RED gateway pid not found (pidfile $HB/gateway.pid or /proc scan)" >&2; exit 2; }
+MAP=$PROC_ROOT/$PID/environ
 [ -r "$MAP" ] || { echo "ENVDEPCHECK RED cannot read $MAP" >&2; exit 2; }
 EXE=$(tr '\0' '\n' < "$MAP" | sed -n 's/^_\?ARGV0=//p' | head -1)
-[ -x "${EXE:-}" ] || EXE=$(readlink -f /proc/$PID/exe 2>/dev/null)
+[ -x "${EXE:-}" ] || EXE=$(readlink -f "$PROC_ROOT/$PID/exe" 2>/dev/null)
 [ -x "${EXE:-}" ] || { echo "ENVDEPCHECK RED cannot resolve gateway interpreter exe (pid $PID)" >&2; exit 2; }
 PP=$(tr '\0' '\n' < "$MAP" | sed -n 's/^PYTHONPATH=//p' | head -1)
 
