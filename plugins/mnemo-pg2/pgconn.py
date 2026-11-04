@@ -131,9 +131,110 @@ def _profile_name() -> str:
     return "default"
 
 
+# W3TKT2-MIKE-1235 #5 — default-bank warning latch (see _warn_default_bank).
+_default_bank_warned: set[str] = set()
+
+
+def _default_bank_warning_state() -> set:
+    """Test hook: the live latch set (names already warned about)."""
+    return _default_bank_warned
+
+
+def _default_bank_warning_reset() -> None:
+    """Test hook: empty the latch (production never calls this)."""
+    _default_bank_warned.clear()
+
+
+_PROFILE_IDENTITY_MARKERS_LOCAL = ("config.yaml", ".env", "SOUL.md",
+                                   "profile.yaml", "auth.json", "state.db")
+
+
+def _profile_served(profile_home: str) -> bool:
+    """Host's OWN served-profile predicate for a profiles/<p> dir:
+    hermes_cli.profiles.profile_exists (the EXACT function vendor
+    gateway/run.py:_resolve_profile_home_for_source calls to decide the
+    fall-through; hermes_constants.named_profile_is_live as second
+    choice) when importable; the same rule mirrored locally otherwise
+    (audit-script precedent — the marker grammar is the host's, copied
+    because this must work from any interpreter). Error-fail-open:
+    any exception => True (never warn on a probe we could not run)."""
+    import pathlib as _pl
+    try:
+        p = _pl.Path(profile_home)
+    except Exception:
+        return True
+    # The host's OWN predicate runs DIRECTLY on the path in hand — never
+    # by re-resolving the profile NAME through hermes_cli's default root
+    # (wrong root inside custom-home deployments and test fixtures;
+    # profile_exists(name) wraps exactly this named_profile_is_live check,
+    # gateway/run.py's fall-through decides on the same identity rule).
+    try:
+        f = getattr(__import__("hermes_constants",
+                               fromlist=["named_profile_is_live"]),
+                    "named_profile_is_live", None)
+        if callable(f):
+            return bool(f(p))
+    except Exception:
+        pass
+    try:
+        if not p.is_dir():
+            return False
+        for m in _PROFILE_IDENTITY_MARKERS_LOCAL:
+            q = p / m
+            if q.is_symlink():
+                return True
+            try:
+                if q.is_file() and (m != ".env" or q.stat().st_size > 0):
+                    return True
+            except OSError:
+                continue
+        return False
+    except Exception:
+        return True
+
+
+def _warn_default_bank(profile: str) -> None:
+    """W3TKT2-MIKE-1235 #5: one-shot named warning for the absent-config
+    banking class (host mechanism cited in the CLOSE row +
+    tests/mnemo2/test_w3tkt2_default_bank_warn.py docstring): a routed
+    turn scoped to profiles/<p> whose dir the host does NOT serve dies in
+    vendor gateway/run.py _resolve_profile_home_for_source and re-roots
+    to the LAUNCH home => later writes derive mnemo2_default and bank to
+    the DEFAULT bank silently. Repo-side guard only (vendor code is never
+    edited here): warn once per profile per process, writes unchanged."""
+    if profile in _default_bank_warned:
+        return
+    _default_bank_warned.add(profile)
+    try:
+        import logging
+        logging.getLogger("mnemo-pg2").warning(
+            "mnemo-pg2: profile '%s' is not served by the host (no identity"
+            " marker under its profiles/ dir) — routed turns for it fall"
+            " through to the launch home and bank to mnemo2_default"
+            " (default bank). Onboard the profile (onboard_profile.sh %s)"
+            " or run scripts/mnemo2_profile_dsn_audit.sh.",
+            profile, profile)
+    except Exception:  # never break a write over a warning
+        pass
+
+
 def agent_schema(explicit: str | None = None) -> str:
     s = explicit or _envget("MNEMO2_SCHEMA")
     if not s:
+        # W3TKT2-MIKE-1235 #5 guard (before derivation — the explicit pin
+        # above can never be in the fall-through class, stays silent):
+        # a scoped home of the shape <root>/profiles/<p> that the host
+        # does not serve = the vendor default-bank fall-through class.
+        hh = _live_home()
+        if hh:
+            try:
+                _pp = __import__("pathlib").Path(hh.rstrip("/"))
+                if _pp.parent.name == "profiles" and not _pp.name.startswith("."):
+                    if not _profile_served(str(_pp)):
+                        _warn_default_bank(re.sub(r"[^a-z0-9_]", "_",
+                                                  _pp.name.lower()))
+            except Exception:  # guard never breaks schema resolution
+                pass
         s = "mnemo2_" + re.sub(r"[^a-z0-9_]", "_", _profile_name().lower())
     if not _SCHEMA_RE.match(s):
         raise ValueError(f"invalid MNEMO2_SCHEMA {s!r}")
