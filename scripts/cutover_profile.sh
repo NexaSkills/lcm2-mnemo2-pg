@@ -98,6 +98,11 @@ if [ -z "$DRY" ]; then
   # env_depcheck takes NO args: it probes the live gateway env + every profile
   # .env DSN (incl. this one) host-wide; fail-closed as briefed.
   bash "$REPO/scripts/env_depcheck.sh" || fail "env_depcheck (see lines above; names the host file + fix command)"
+  # W3TKT2-MIKE-1235 #5: fail-closed host-wide audit that every SERVED profile
+  # carries its own MNEMO2_PG_DSN (an absent-config routed fall-through would
+  # otherwise bank silently to mnemo2_default; the routing lever itself is
+  # vendor Hermes code — this audit is the repo-side guard, CLOSE row cites).
+  bash "$REPO/scripts/mnemo2_profile_dsn_audit.sh" || fail "mnemo2_profile_dsn_audit (served profile lacks MNEMO2_PG_DSN; names the .env to fix)"
   echo "   asserts GREEN for $PROFILE"
 fi
 
