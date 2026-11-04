@@ -75,10 +75,16 @@ echo "-- 2. onboard_profile.sh (post-1a: engine=lcm2-pg form)"
 if [ -n "$DRY" ]; then echo "DRY: bash $REPO/scripts/onboard_profile.sh $PROFILE --dry-run"; else
   bash "$REPO/scripts/onboard_profile.sh" "$PROFILE" || fail "onboard_profile.sh failed"
 fi
-# onboard §4 still writes the LEGACY default `context.engine=lcm` (the known
-# product bug named in the plan); engine_engine_align.sh is the idempotent
-# convergence leg that flips it to lcm2-pg. Run it scoped to THIS profile only
-# (never call it bare — with no args it walks every profile, fleet rule).
+# W2FIX-MIKE-0524 F-1b: fail-closed audit that onboard NEVER wrote the
+# legacy engine for this profile. config.yaml is read via CLI only (fleet
+# rule: never file-edit); the raw grep is a read-only belt check that the
+# on-disk value is exactly `lcm2-pg` and the legacy `lcm` was never the
+# written value. engine_engine_align.sh below stays as the idempotent
+# convergence leg/assert, NOT the fix (onboard §4 now writes lcm2-pg).
+eng_pre=$(hermes -p "$PROFILE" config get context.engine 2>/dev/null | tr -d '[:space:]')
+grep -Eq '^[[:space:]]*engine:[[:space:]]*"?lcm"?[[:space:]]*$' "$PDIR/config.yaml" 2>/dev/null \
+  && echo "WARN: config.yaml still carries legacy engine=lcm (pre-$PROFILE-onboard residue or legacy writer)" >&2
+[ -z "$DRY" ] && [ "$eng_pre" = "lcm" ] && fail "onboard wrote legacy context.engine=lcm (W1-1a fix must be in onboard_profile.sh §4; align leg may not paper over it)"
 [ -z "$DRY" ] && bash "$REPO/scripts/engine_engine_align.sh" "$PROFILE" || true
 # engine must READ lcm2-pg via CLI (assert, never file-edit):
 eng=$(hermes -p "$PROFILE" config get context.engine 2>/dev/null | tr -d '[:space:]')

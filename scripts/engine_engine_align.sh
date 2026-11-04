@@ -10,7 +10,9 @@
 # after 10.00 sec") and lcm2_<p>.messages/summary_nodes never advance —
 # counters STATIC fleet-wide (debbie rebattery-close.md PARTIAL driver).
 #
-# The roll kit itself set context.engine=lcm (onboard_profile.sh §4) — this
+# The old roll kit set context.engine=lcm (onboard_profile.sh §4 — FIXED
+# W2FIX-MIKE-0524: onboard now writes lcm2-pg directly; this script is the
+# idempotent convergence leg/assert, not the fix) — this
 # script is the superseding flip leg: set it to lcm2-pg so the host's
 # config-driven engine loader (agent_init._select_context_engine) resolves
 # the repo's context-engine capture dir (plugins/context_engine/lcm2-pg —

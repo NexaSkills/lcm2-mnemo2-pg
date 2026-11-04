@@ -111,7 +111,11 @@ else
 fi
 
 echo "== 4. config via hermes config set ONLY =="
-run hermes -p "$AGENT" config set context.engine lcm
+# W2FIX-MIKE-0524 (W1-1a landing): onboard writes the NEW engine directly.
+# The legacy `lcm` value here was the known product bug: cutover only
+# papered over it afterwards via engine_engine_align.sh (which stays as
+# the idempotent convergence assert, NOT the fix leg).
+run hermes -p "$AGENT" config set context.engine lcm2-pg
 run hermes -p "$AGENT" config set memory.provider mnemosyne
 run hermes -p "$AGENT" config set delegation.max_concurrent_children 1
 run hermes -p "$AGENT" config set delegation.max_spawn_depth 1
