@@ -71,13 +71,51 @@ EXE=$(tr '\0' '\n' < "$MAP" | sed -n 's/^_\?ARGV0=//p' | head -1)
 PP=$(tr '\0' '\n' < "$MAP" | sed -n 's/^PYTHONPATH=//p' | head -1)
 
 IMPORT_PROBE='import importlib.util as u,sys
-missing=[m for m in ("psycopg","psycopg_pool") if u.find_spec(m) is None]
+missing=[m for m in ("psycopg","psycopg_pool","ruamel","yaml") if u.find_spec(m) is None]
 print("OK" if not missing else "MISSING:"+",".join(missing)); sys.exit(0 if not missing else 3)'
 out=$(env -u PYTHONPATH PYTHONPATH="$PP" "$EXE" -I -c "$IMPORT_PROBE" 2>&1); rc=$?
+# Default-start sibling probe (C2RESID2S): a hermes-CLI SUBPROCESS of the
+# gateway runs WITHOUT this PYTHONPATH (the CLI launcher itself runs
+# `exe -I` — site sets sys.path from the exe's own lib dirs + user site,
+# and -I disables the user site). The in-process import chain below
+# (hermes_cli.config -> hermes_yaml -> ruamel) must import on THAT
+# surface too when anything shells out to the CLI, so probe it the same
+# fail-closed way (guarded find_spec: dotted misses RAISE there).
+DSN_PROBE='import importlib.util as u,sys
+def miss(m):
+    try: return u.find_spec(m) is None
+    except (ImportError, ValueError): return True
+missing=[m for m in ("ruamel.yaml","yaml") if miss(m)]
+print("OK" if not missing else "MISSING:"+",".join(missing)); sys.exit(0 if not missing else 3)'
+dsnout=$(env -u PYTHONPATH -u PYTHONHOME -u VIRTUAL_ENV "$EXE" -I -c "$DSN_PROBE" 2>&1); dsnpc=$?
 FAIL=0
-if [ "$rc" = 0 ] && [ "$out" = OK ]; then
-  echo "ENVDEPCHECK ok   gateway env (pid $PID) imports psycopg + psycopg_pool (PYTHONPATH entries: $(printf '%s' "$PP" | tr ':' '\n' | grep -c . ))"
+if [ "$rc" = 0 ] && [ "$out" = OK ] && [ "$dsnpc" = 0 ] && [ "$dsnout" = OK ]; then
+  echo "ENVDEPCHECK ok   gateway env (pid $PID) imports psycopg + psycopg_pool (+ ruamel/yaml config stack on BOTH the PYTHONPATH env and the default-start CLI subprocess env)"
+elif [ "$rc" = 0 ] && [ "$out" = OK ] && { [ "$dsnpc" != 0 ] || [ "$dsnout" != OK ]; }; then
+  # the PYTHONPATH env is fine but the CLI-subprocess surface is not —
+  # the distinct C2RESID2S class: g1loader emits "Failed to load context
+  # engine: No module named 'ruamel'" while psycopg legs stay green.
+  echo "ENVDEPCHECK RED  gateway exe $EXE default-start subprocess (NO PYTHONPATH — how the hermes CLI launcher actually runs: exe -I, user-site disabled) CANNOT import the config stack: ${dsnout:-probe failed rc=$dsnpc}" >&2
+  echo "ENVDEPCHECK FIX  hermes_cli.config -> hermes_yaml -> ruamel.yaml is an IN-PROCESS import chain on this exe; psycopg installs alone never put ruamel/pyyaml on the exe's own default sys.path. Install into a dir the exe carries by DEFAULT (its lib/python3.*/site-packages) — operator leg, this script changes nothing:" >&2
+  echo "      $EXE -m pip install --target <exe-lib>/lib/python3.*/site-packages ruamel.yaml pyyaml   (or a --target dir added via a PYTHONPATH drop-in ONLY if it also reaches the -I subprocess; -I ignores env PYTHONPATH and ~/.local both)" >&2
+  echo "      apply+bounce are the OPERATOR's leg (done from a shell OUTSIDE the gateway process, not from here)" >&2
+  FAIL=2
 else
+  case "$out" in
+    *ruamel*|*yaml*)
+      # C2RESID2S: name BOTH surfaces precisely. The gateway process
+      # itself carries systemd-drop-in PYTHONPATH entries; the hermes CLI
+      # launcher and its children run `exe -I` (env PYTHONPATH and the
+      # user site are IGNORED under -I). ruamel/yaml must import on both.
+      echo "ENVDEPCHECK RED  gateway env (pid $PID, exe $EXE) CANNOT import: ${out:-probe failed rc=$rc}  [PYTHONPATH env; default-start -I subprocess: ${dsnout:-?}]" >&2
+      echo "ENVDEPCHECK FIX  hermes_cli.config imports hermes_yaml which imports ruamel.yaml at MODULE scope. The context-engine capture lane calls user_plugin_host() -> _plugins_config() -> load_config_readonly() inside the gateway interpreter: if ruamel is missing THERE, the whole capture load dies (\"Failed to load context engine\" -> silent per-turn fallback), regardless of capture links. Two surfaces to fix (operator legs; this script changes nothing):" >&2
+      echo "  (a) the PYTHONPATH env the gateway runs with (first entry above, or the launcher env venv ~/.hermes/installs/*/environments/*/venv):" >&2
+      echo "      <that-venv-bin>/python -m pip install ruamel.yaml pyyaml" >&2
+      echo "  (b) the exe's own default-start surface — the hermes CLI launcher runs '$EXE -I ...': -I IGNORES PYTHONPATH AND the user site (~/.local), so a --user or drop-in fix is INVISIBLE there. ruamel+yaml must live inside the exe's built-in site-packages:" >&2
+      echo "      $EXE -m pip install --target <dir-on-its-default-sys.path, i.e. <exe-root>/lib/python3.*/site-packages> ruamel.yaml pyyaml" >&2
+      echo "  (then bounce from OUTSIDE the gateway process)" >&2
+      FAIL=2 ;;
+    *)
   echo "ENVDEPCHECK RED  gateway env (pid $PID, exe $EXE) CANNOT import: ${out:-probe failed rc=$rc}" >&2
   echo "ENVDEPCHECK FIX  capture-lane import (plugins/lcm2-pg/pgconn.py 'from psycopg_pool import ConnectionPool') dies SILENTLY per-turn in this env. Two durable command forms (operator leg; this script changes nothing):" >&2
   echo "  (a) install into the env the gateway already carries first:" >&2
@@ -88,7 +126,8 @@ else
   printf '      [Service]\nEnvironment=PYTHONPATH=%s:%s\n' "${PP%%:*}" "<ABSOLUTE-PATH-OF-A-python3.14-COMPATIBLE-site-packages-HOLDING-psycopg_pool>" >&2
   echo "      apply+bounce are the OPERATOR's leg (done from a shell OUTSIDE the gateway process, not from here)" >&2
   echo "      (find a source env: grep -l psycopg_pool ~/.hermes/installs/*/environments/*/venv/lib/python3.*/site-packages -d skip)" >&2
-  FAIL=2
+  FAIL=2 ;;
+  esac
 fi
 
 # DSN sanity across root + profile .env (same fail-closed family)

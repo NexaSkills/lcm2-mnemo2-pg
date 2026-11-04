@@ -48,12 +48,28 @@ pytestmark = pytest.mark.skipif(
 
 def _boot(i):
     # plain `chat -q`: each boot mints a fresh session id (no --resume),
-    # so no session state carries between boots
+    # so no session state carries between boots.
+    #
+    # HERMES_STATE_DB_GUARD_BYPASS=1 (C2RESID2S): the boot runs as a CHILD
+    # of a pytest process here, and the host's live-system guard
+    # (hermes_state_guard._in_test_context) counts pytest ANCESTRY as test
+    # context even when the child carries its own real HERMES_HOME — so the
+    # child refuses to open ITS OWN profiles/<p>/state.db
+    # ("live-system guard: test attempted to open production state.db",
+    # rc=1, session store unavailable). The gate this test pins is the
+    # import-poisoning crash class (CRASH_PATTERNS), not the session-store
+    # write; the boot legitimately runs with the profile's real home, so
+    # the ancestry heuristic is a false positive HERE. The guard's own
+    # documented escape hatch (hermes_state._ensure_test_isolation checks
+    # this exact env) is the right tool: real production-DB risk stays
+    # guarded everywhere else, and every crash pattern still fails the
+    # test (a poisoned import fails the boot long before state.db opens).
+    env = dict(os.environ, HERMES_STATE_DB_GUARD_BYPASS="1")
     try:
         r = subprocess.run(
             [_which_hermes(), "-p", PROFILE, "chat", "-q", "Reply PONG"],
             capture_output=True, text=True, timeout=BOOT_TIMEOUT,
-            cwd=str(REPO),
+            cwd=str(REPO), env=env,
         )
     except subprocess.TimeoutExpired:
         return f"boot {i}: TIMEOUT after {BOOT_TIMEOUT}s"

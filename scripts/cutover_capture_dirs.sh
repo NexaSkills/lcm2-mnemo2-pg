@@ -21,6 +21,28 @@ SRC="$REPO/plugins/context_engine/lcm2-pg"
 [ -d "$SRC" ] || { echo "CAPTURE_CUTOVER RED repo capture dir missing: $SRC" >&2; exit 2; }
 run() { if [ "$DRY" = "--dry-run" ]; then echo "DRY: $*"; else "$@"; fi; }
 FAIL=0; N=0
+
+# Route-1 target hardening (C2RESID2S): find_engine_dir's user leg is
+# LAUNCH-scope (user_plugins_dir() = get_hermes_home()/plugins at boot;
+# HERMES_PROFILE ignored — gate-proved C2DEPLOY-GATE). The gateway process
+# resolves context.engine from the ROOT config, so the ROOT capture dir is
+# a first-class target, not just the per-profile links below.
+root_link="$HERMES_BASE/plugins/context_engine/lcm2-pg"
+root_eng=$(hermes config get context.engine 2>/dev/null | tr -d '[:space:]')
+tgt=$(readlink -f "$root_link" 2>/dev/null)
+if [ "$root_eng" != "lcm2-pg" ]; then
+  echo "CAPTURE_CUTOVER skip root (engine=${root_eng:-<empty>})"
+elif [ -n "$tgt" ] && [ "$tgt" = "$(readlink -f "$SRC")" ]; then
+  echo "CAPTURE_CUTOVER ok   root (already linked)"; N=$((N+1))
+else
+  run mkdir -p "$HERMES_BASE/plugins/context_engine"
+  if run ln -sfn "$SRC" "$root_link"; then
+    echo "CAPTURE_CUTOVER set  root -> $SRC"; N=$((N+1))
+  else
+    echo "CAPTURE_CUTOVER FAIL root (ln refused)" >&2; FAIL=2
+  fi
+fi
+
 for d in "$HERMES_BASE"/profiles/*/; do
   [ -f "$d/config.yaml" ] || continue
   p=$(basename "$d")

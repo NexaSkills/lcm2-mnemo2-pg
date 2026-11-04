@@ -154,7 +154,15 @@ def _config_engine() -> str:
     check_all only: which engine the operator's config NAMES, for
     logging a mismatch against the boot verdict."""
     try:
-        import yaml
+        try:
+            import yaml  # host venv only; the gateway tools-exe carries
+            # NEITHER PyYAML NOR ruamel (uv-made standalone CPython; its
+            # lib/site-packages holds psycopg only) — C2RESID2S R1: THE
+            # G1 blocker: a bare `import yaml` here raised ImportError
+            # inside the gateway and made _config_engine report the
+            # engine as unset. Fall through to the text scan instead.
+        except ImportError:
+            yaml = None
         homes = [os.environ.get("HERMES_HOME")]
         if not os.environ.get("HOME_ISOLATION"):
             homes.append("~/.hermes")
@@ -164,17 +172,60 @@ def _config_engine() -> str:
             f = os.path.join(os.path.expanduser(home), "config.yaml")
             if not os.path.isfile(f):
                 continue
-            with open(f, "r", encoding="utf-8", errors="replace") as fh:
-                cfg = yaml.safe_load(fh) or {}
-            ctx_cfg = cfg.get("context") if isinstance(cfg, dict) else None
-            name = (ctx_cfg or {}).get("engine") if isinstance(ctx_cfg, dict) else None
-            name = (name or "").strip().lower()
+            name = ""
+            if yaml is not None:
+                with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                    cfg = yaml.safe_load(fh) or {}
+                ctx_cfg = cfg.get("context") if isinstance(cfg, dict) else None
+                name = (ctx_cfg or {}).get("engine") if isinstance(ctx_cfg, dict) else None
+                name = (name or "").strip().lower()
+            else:
+                name = _config_engine_text(f)
             if name == "lcm2-pg":
                 return NEW
             if name == "lcm":
                 return OLD
     except Exception:
         pass
+    return ""
+
+
+def _config_engine_text(path: str) -> str:
+    """Text fallback for `context: {engine: <name>}` when NO yaml module
+    exists (see _config_engine — the gateway tools-exe reality). Scans
+    for an `engine:` line under a top-level `context:` block (a dedent
+    to column 0 ends the block, so a nested `engine:` under any OTHER
+    top-level key can never leak in). Inline-flow form
+    `context: {engine: x}` is recognised; comments and quotes tolerated.
+    Best-effort diagnostic path: malformed input yields "" exactly like
+    the yaml path's except-arm. Stdlib only, never raises to the caller
+    (the caller wraps, and an unreadable file just finds nothing)."""
+    import re
+    in_ctx = False
+    try:
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    with fh:
+        for line in fh:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip())
+            stripped = line.strip()
+            if indent == 0:
+                key, _, val = stripped.partition(":")
+                if key.strip() != "context":
+                    in_ctx = False
+                    continue
+                val = val.split("#", 1)[0].strip()
+                if val.startswith("{"):  # context: {engine: x, ...}
+                    m = re.search(r"engine\s*:\s*([^,}\s]+)", val)
+                    return m.group(1).strip().strip("'\"").lower() if m else ""
+                in_ctx = True
+            elif in_ctx:
+                m = re.match(r"engine\s*[,:]?\s*[:=]?\s*([^\s#]+)", stripped)
+                if m:
+                    return m.group(1).strip("'\"").lower()
     return ""
 
 
