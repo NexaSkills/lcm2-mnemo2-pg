@@ -58,6 +58,7 @@ def agent_schema(explicit: str | None = None) -> str:
     s = explicit or os.environ.get("LCM2_AGENT_SCHEMA")
     if not s:
         home = ""
+        pname = None
         try:
             from hermes_constants import get_hermes_home
 
@@ -66,7 +67,31 @@ def agent_schema(explicit: str | None = None) -> str:
                 home = str(h)
         except Exception:  # no Hermes on this interpreter: env behaviour
             home = os.environ.get("HERMES_HOME", "")
-        base = os.path.basename(home.rstrip("/")) if home else "default"
+        try:
+            # W3TRADESCHEMA-MIKE-0030: name the bank by PROFILE ID when the
+            # host can say which profile owns this home (root home ->
+            # 'default', <root>/profiles/<name> -> the name). Without this
+            # the '-p default' CLI lane (main.py early-return leaves
+            # HERMES_HOME at the root home) sanitized basename '.hermes' to
+            # '_hermes' and wrote the default lane into lcm2__hermes while
+            # every gate measured lcm2_default. basename stays the
+            # fallback for interpreters without Hermes / exotic homes.
+            from hermes_constants import profile_name_for_home
+
+            pname = profile_name_for_home(home) if home else None
+        except Exception:  # pragma: no cover - no Hermes funnel
+            pname = None
+        if pname is None and home:
+            # funnel absent (or an exotic home it cannot name): the
+            # basename fallback maps the canonical root home '.hermes' to
+            # 'default' directly — the mnemo side already carries this map
+            # (_profile_name), so BOTH routes name the default lane
+            # lcm2_default. Sanitizing '.hermes' to '_hermes' was the bug.
+            bn = os.path.basename(home.rstrip("/"))
+            if bn == ".hermes":
+                pname = "default"
+        base = pname or (os.path.basename(home.rstrip("/"))
+                         if home else "default")
         s = f"lcm2_{re.sub(r'[^a-z0-9_]', '_', base.lower())}"
     if not _SCHEMA_RE.match(s):
         raise ValueError(f"invalid schema name: {s!r}")
