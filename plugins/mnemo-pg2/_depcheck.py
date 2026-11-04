@@ -92,6 +92,20 @@ def _extra_site_dirs() -> list:
                         raw += os.pathsep + line.split("=", 1)[1].strip()
         except OSError:
             continue
+    # Root .env too (the DSN lives there on the fleet). Read-only,
+    # site-dir keys only — no secrets touched.
+    try:
+        root_env = (os.environ.get("HERMES_ROOT_HOME")
+                    or os.path.expanduser("~/.hermes"))
+        with open(os.path.join(root_env, ".env"), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(("LCM2_SITE_DIRS=", "LCM2_PG_SITE_DIR=",
+                                    "PYTHONPATH=")):
+                    raw += os.pathsep + line.split("=", 1)[1].strip()
+    except OSError:
+        pass
     for d in raw.split(os.pathsep):
         d = d.strip().strip('"').strip("'")
         if d and os.path.isdir(d) and d not in out:
