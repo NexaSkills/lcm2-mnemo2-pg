@@ -155,7 +155,11 @@ def test_cutover_root_leg_dry_run(tmp_path):
 
 def test_onboard_ships_root_schema_leg():
     src = ONBOARD.read_text(encoding="utf-8")
-    assert "CREATE SCHEMA IF NOT EXISTS $_root_schema" in src
+    # W3TKT-MIKE-1220 #3 landed the quoting cure: the identifier is now
+    # the quoted form \"$_root_schema\" (a bare hyphen-dirty token is a
+    # SQL syntax error — same leg, quoted emission).
+    assert 'CREATE SCHEMA IF NOT EXISTS \\"$_root_schema\\"' in src \
+        or "CREATE SCHEMA IF NOT EXISTS $_root_schema" in src  # either form
     assert "InvalidSchemaName" in src  # names the class it cures
     assert "degenerate" in src  # never builds an illegal schema name
 
