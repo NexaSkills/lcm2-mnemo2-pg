@@ -357,7 +357,12 @@ class LCM2Engine:
         return list(messages or [])
 
     def should_compress_preflight(self, messages) -> bool:
-        return True
+        # MANNY-AUDIT-1940: unconditional True made the host run a doomed
+        # compress() pass on EVERY turn (journal: "Preflight compression
+        # ... >= 0 threshold" -> "Max compression attempts (3) reached").
+        # Consistent with should_compress: fire only at/above threshold.
+        # context_length==0 (update_model never ran) => False, same rule.
+        return self.should_compress(None)
 
     def has_content_to_compress(self, messages) -> bool:
         return bool(messages)
