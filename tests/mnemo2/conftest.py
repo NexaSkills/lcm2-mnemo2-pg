@@ -37,7 +37,28 @@ import _suite_imports  # noqa: F401,E402  (import side effect is the fix)
 # The plugin's public import surface binds the bare keys to THIS plugin's
 # files by path (no key theft from a foreign owner); register_agent's
 # namespaced package import stays the authoritative route either way.
-import _public_imports  # noqa: E402,F401  (bare keys -> THIS plugin's files)
+# SUITEGREEN-MIKE-0810: the module this line imported lived at
+# plugins/mnemo-pg2/_public_imports.py (NOT tests/mnemo2/ — there is no
+# blob at tests/mnemo2/_public_imports.py in any revision, verified with
+# git ls-tree on HEAD and origin/main). The bare import only ever
+# resolved when lcm2's conftest had prepended ITS dir and our plugin-dir
+# prepend above happened to be adjacent in the merged import path; under
+# collection orderings where only our dir was in play the import missed
+# and the bare-key binding stayed on the SIBLING's file — the exact
+# ordering-coupled r7 class (agent_schema() -> lcm2_mnemo2agent). Load
+# it BY FILE, deterministic in every run (no sys.modules edits beyond
+# what _public_imports itself guards; it never steals a foreign key).
+import importlib.util as _pi_util
+_pi_spec = _pi_util.spec_from_file_location(
+    "_public_imports", os.path.join(PLUGIN_DIR, "_public_imports.py"))
+if _pi_spec is not None and _pi_spec.loader is not None:
+    _pi_mod = _pi_util.module_from_spec(_pi_spec)
+    sys.modules.setdefault("_public_imports", _pi_mod)
+    try:
+        _pi_spec.loader.exec_module(_pi_mod)
+    except BaseException:
+        sys.modules.pop("_public_imports", None)
+        raise
 import pgconn  # noqa: E402  (plugin module)
 
 SOCKET = os.environ.get(

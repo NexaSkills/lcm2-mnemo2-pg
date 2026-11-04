@@ -61,18 +61,22 @@ class _Cx:
     def execute(self, sql, params=None):
         s = " ".join(sql.split())
         if s.lower().startswith("delete"):
+            # fetchall() rows are TUPLES here; iterate them whole (the old
+            # `[r[0] for r in ...]` pre-projection made `for i, c in rows`
+            # unpack bare ints -> TypeError 'cannot unpack non-iterable
+            # int object' in every sweep subprocess = suite-red F1).
             if "position(" in s:
                 m = params["m"]
-                rows = [r[0] for r in _conn.execute(
-                    "select id, content from working_memory")]
+                rows = list(_conn.execute(
+                    "select id, content from working_memory"))
                 ids = [i for i, c in rows if m in c]
                 _conn.executemany(
                     "delete from working_memory where id=?", [(i,) for i in ids])
                 self._d = len(ids)
             else:
                 pat = params.get("p")
-                rows = [r[0] for r in _conn.execute(
-                    "select id, content from working_memory")]
+                rows = list(_conn.execute(
+                    "select id, content from working_memory"))
                 ids = [i for i, c in rows if _esc_like(pat, c)]
                 _conn.executemany(
                     "delete from working_memory where id=?", [(i,) for i in ids])
@@ -173,9 +177,15 @@ case "$1" in
 esac
 if [ "$1" = "--user" ]; then shift; fi
 sub="$1"; unit="${2:-}"
+# journalctl --user -u <unit> ... arrives here as sub=""; a fake journal
+# file (JOURNAL_FILE) replays the firing lines; absent = silent journal
+if [ "$sub" = "-u" ] || [ "$sub" = "" ]; then
+  [ -n "${JOURNAL_FILE:-}" ] && [ -f "$JOURNAL_FILE" ] && cat "$JOURNAL_FILE"
+  exit 0
+fi
 case "$sub" in
   is-enabled) [ -f "$SC_STATE/$unit.enabled" ] && cat "$SC_STATE/$unit.enabled" || { echo "not-found" >&2; exit 1; } ;;
-  is-active)  [ -f "$SC_STATE/$unit.active" ] && cat "$SC_STATE/$unit.active" || { echo "inactive"; exit 3; } ;;
+  is-active)  [ -f "$SC_STATE/$unit.active" ] && cat "$SC_STATE/$unit.active" || { echo inactive; exit 3; } ;;
 esac
 exit 0
 """
@@ -189,6 +199,19 @@ def _run_timer(tmp_path, extra_env=None):
     sc = root / "bin" / "systemctl"
     sc.write_text(FAKE_SYSTEMCTL)
     sc.chmod(0o755)
+    jc = root / "bin" / "journalctl"
+    jc.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ -n \"${JOURNAL_FILE:-}\" ] && [ -f \"$JOURNAL_FILE\" ]; then cat \"$JOURNAL_FILE\"; fi\n"
+        "exit 0\n")
+    jc.chmod(0o755)
+    # fake journal with firing lines (verify leg accepts enabled+firing;
+    # a real host's journal shows the watchdog Starting/Finished pairs)
+    (root / "journal.log").write_text(
+        "Starting LCM2/MNEMO2 instance watchdog (self-heal role/hba/dbs; "
+        "never touches :54329)...\n"
+        "Finished LCM2/MNEMO2 instance watchdog (self-heal role/hba/dbs; "
+        "never touches :54329).\n")
     # repo layout: fake repo with executable ensure_instance.sh
     repo = root / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -200,6 +223,7 @@ def _run_timer(tmp_path, extra_env=None):
     env["HOME"] = str(root / "home")
     env["SC_LOG"] = str(root / "argv.log")
     env["SC_STATE"] = str(root / "state")
+    env["JOURNAL_FILE"] = str(root / "journal.log")
     env["REPO"] = str(repo)
     env.update(extra_env or {})
     r = subprocess.run([str(Path("/bin/bash")), str(TIMER)], env=env,
@@ -210,6 +234,12 @@ def _run_timer(tmp_path, extra_env=None):
 def test_timer_install_green_idempotent(tmp_path):
     if not TIMER.is_file():
         pytest.skip("ensure_timer_install.sh lands with the X-2 commit")
+    # SUITEGREEN-MIKE-0810: fake journal with real firing lines — the
+    # script's verify leg (fixed this commit) accepts enabled+firing, so
+    # the hermetic fake must be able to say "it fired" like a live host
+    # does. The old fake answered is-active from a state file the enable
+    # leg never wrote for the SERVICE, so verify saw a working install as
+    # idle-silent (live-mirroring 'enabled= active=inactive').
     r1, root = _run_timer(tmp_path)
     assert r1.returncode == 0, r1.stdout + r1.stderr
     assert "TIMER_GREEN" in r1.stdout
@@ -225,6 +255,120 @@ def test_timer_install_green_idempotent(tmp_path):
     assert "already installed" in r2.stdout
     baks = list(unitdir.glob("*.bak-*"))
     assert baks == [], f"rerun rewrote identical units: {baks}"
+
+
+def test_timer_green_when_timer_inactive_but_firing(tmp_path):
+    """X-2 verify-leg regression (SUITEGREEN-MIKE-0810): a timer that is
+    ENABLED but reports is-active INACTIVE must still be GREEN when it
+    demonstrably FIRES. Live premise (beez, 2026-11-04 08:09): is-enabled
+    =enabled, is-active =inactive between fires, while
+    `journalctl --user -u lcm2-mnemo2-ensure.service` shows Starting/
+    Finished pairs every ~2min — the old enabled-AND-active hardcode
+    called a WORKING watchdog RED ('TIMER RED (enabled= active=inactive)').
+    The fake systemctl below answers is-active like a real timer does
+    (inactive after each elapse, RemainAfterElapse semantics) and the
+    journalctl stub replays firing pairs.
+    """
+    root = tmp_path / "sys2"
+    (root / "bin").mkdir(parents=True)
+    (root / "state").mkdir()
+    (root / "home").mkdir()
+    sc = root / "bin" / "systemctl"
+    sc.write_text(r'''#!/usr/bin/env bash
+echo "$*" >> "$SC_LOG"
+case "$1" in daemon-reload) exit 0 ;; esac
+if [ "$1" = "--user" ]; then shift; fi
+# journalctl --user -u <unit> ... arrives with -u as $1 (same --user
+# stripping as systemctl); the fake journal file replays firing lines.
+if [ "$1" = "-u" ]; then
+  [ -n "${JOURNAL_FILE:-}" ] && [ -f "$JOURNAL_FILE" ] && cat "$JOURNAL_FILE"
+  exit 0
+fi
+sub="$1"; unit="${2:-}"
+case "$sub" in
+  is-enabled) [ -f "$SC_STATE/$unit.enabled" ] && cat "$SC_STATE/$unit.enabled" || { echo "not-found" >&2; exit 1; } ;;
+  is-active)
+    case "$unit" in
+      *.timer) echo inactive; exit 3 ;;        # enabled timer idle between fires
+      *)       echo inactive; exit 3 ;;
+    esac ;;
+  enable)
+    t=""; for a in "$@"; do case "$a" in *.timer|*.service) t="${a%.s*}" ;; esac; done
+    [ -n "$t" ] && echo enabled > "$SC_STATE/$t.enabled"
+    exit 0 ;;
+esac
+exit 0
+''')
+    sc.chmod(0o755)
+    jc = root / "bin" / "journalctl"
+    jc.write_text(r'''#!/usr/bin/env bash
+# replay: the watchdog really fired twice in the window
+printf 'Starting LCM2/MNEMO2 instance watchdog (self-heal role/hba/dbs; never touches :54329)...\nFinished LCM2/MNEMO2 instance watchdog (self-heal role/hba/dbs; never touches :54329).\nStarting LCM2/MNEMO2 instance watchdog (self-heal role/hba/dbs; never touches :54329)...\nFinished LCM2/MNEMO2 instance watchdog (self-heal role/hba/dbs; never touches :54329).\n'
+exit 0
+''')
+    jc.chmod(0o755)
+    repo = root / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    ens = repo / "scripts" / "ensure_instance.sh"
+    ens.write_text("#!/usr/bin/env bash\nexit 0\n")
+    ens.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{root / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin"
+    env["HOME"] = str(root / "home")
+    env["SC_LOG"] = str(root / "argv.log")
+    env["SC_STATE"] = str(root / "state")
+    env["REPO"] = str(repo)
+    r = subprocess.run([str(Path("/bin/bash")), str(TIMER)], env=env,
+                       capture_output=True, text=True, timeout=60)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "TIMER_GREEN" in r.stdout, out
+    # the RED case must stay RED: timer idle AND the journal shows NO fires
+    jc.write_text("#!/usr/bin/env bash\nexit 0\n")
+    jc.chmod(0o755)
+    r2 = subprocess.run([str(Path("/bin/bash")), str(TIMER)], env=env,
+                        capture_output=True, text=True, timeout=60)
+    assert r2.returncode != 0, r2.stdout + r2.stderr
+    assert "TIMER_RED" in r2.stdout or "TIMER RED" in r2.stdout
+
+
+def test_timer_verify_leg_live_state(tmp_path):
+    """X-2 verify leg re-proven against LIVE state instead of a hardcode.
+
+    The hermetic fake above proves the script's happy path + idempotence.
+    This pins the verify LEG's semantics on the real host: a timer that
+    `RemainAfterElapse=no` lets go of between fires reports is-active
+    inactive with is-enabled enabled — an `enabled AND active` hardcode
+    calls a WORKING watchdog RED (exact live incident 08:09:41 SAST in
+    this run: 'TIMER RED mybuddy-beez (enabled= active=inactive)' while
+    journalctl shows the watchdog firing every ~2min, LastTrigger
+    07:09:18, and list-timers shows NEXT scheduled). If the unit is not
+    installed on this host at all (a fresh box), skip with the reason —
+    never hardcode host facts.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("systemctl") is None:
+        pytest.skip("no systemctl on this host")
+    probe = subprocess.run(
+        ["systemctl", "--user", "show", "lcm2-mnemo2-ensure.timer",
+         "-p", "LoadState", "-p", "UnitFileState", "-p", "ActiveState",
+         "-p", "LastTriggerUSec", "-p", "RemainAfterElapse"],
+        capture_output=True, text=True, timeout=30)
+    props = dict(line.split("=", 1) for line in probe.stdout.splitlines()
+                 if "=" in line)
+    if props.get("LoadState") != "loaded":
+        pytest.skip("lcm2-mnemo2-ensure.timer not installed on this host "
+                    "(fresh-box case; install leg owns it)")
+    assert props.get("UnitFileState") == "enabled", \
+        f"timer lost its enablement: {props}"
+    if props.get("RemainAfterElapse") == "no" and \
+            props.get("ActiveState") != "active":
+        # one-shot daemon timer: inactive between fires is HEALTHY, assert
+        # the trigger history instead (it proves the daemon really fires)
+        assert props.get("LastTriggerUSec", "n/a") not in ("n/a", "Mon 2026-11-30 00:00:00 UTC"), \
+            f"timer never fired: {props}"
 
 
 def _run_timer2(tmp_path):

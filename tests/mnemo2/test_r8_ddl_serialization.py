@@ -27,15 +27,27 @@ def _boot_lock_arg_nodes():
     for node in ast.walk(TREE):
         if not isinstance(node, ast.Call):
             continue
-        # join all string-ish parts of the first arg (the SQL)
-        parts = []
-        for a in node.args[:1]:
+        # SUITEGREEN-MIKE-0810: the SQL literal may sit in ANY arg slot
+        # (3f9349c form: execute("SELECT ...pg_advisory_xact_lock(...%s...
+        # %s...)", (dsn, dbname)) — literal in args[0], key expressions in
+        # the tuple at args[1]). Scanning only args[:1] for the literal and
+        # then blindly returning args[1:] made the key-args join pick up
+        # unrelated names (test1 RED on the current loader: joined contained
+        # 'schema' from a different call's shape). Identify the SQL literal
+        # arg by content, then take the key args = everything AFTER it.
+        lit_idx = None
+        for i, a in enumerate(node.args):
             for sub in ast.walk(a):
-                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                    parts.append(sub.value)
-        if not any("advisory" in p and "lock" in p.lower() for p in parts):
+                if (isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                        and "advisory" in sub.value
+                        and "lock" in sub.value.lower()):
+                    lit_idx = i
+                    break
+            if lit_idx is not None:
+                break
+        if lit_idx is None:
             continue
-        return node.args[1:]
+        return node.args[lit_idx + 1:]
     raise AssertionError("no pg_advisory_*_lock execute call found in pgconn.py")
 
 

@@ -48,11 +48,39 @@ systemctl --user enable --now lcm2-mnemo2-ensure.timer || {
   echo "TIMER FAIL — enable --now"; exit 1; }
 
 # verify leg (never trust the surface)
+# X-2 SUITEGREEN-MIKE-0810: `enable --now` on an OnBootSec= timer starts it,
+# but a daemon-reload with unit-file content changes in the same window
+# REPLACES the unit object and the pending start is lost — timer stays
+# enabled, surfaces inactive until its first elapse. Live incident (beez,
+# 2026-11-04 07:09:18 journal: "Stopped ... watchdog timer", unit files
+# rewritten, "Reloading finished" — service kept firing every 2min yet
+# is-active=inactive persisted for 77min, until an explicit start at
+# 08:28:02). Nudge the start (idempotent; a running timer is a no-op),
+# and accept a timer that demonstrably FIRES even when the surface reads
+# idle (the old `enabled AND active` hardcode called a WORKING watchdog
+# RED: 'TIMER RED (enabled= active=inactive)'). GREEN = enabled AND
+# (surface-active OR journal shows starts in the last 15min — past
+# OnUnitActiveSec=2min + slack, so a genuinely stalled timer shows stale).
 st=$(systemctl --user is-enabled lcm2-mnemo2-ensure.timer 2>/dev/null)
 act=$(systemctl --user is-active lcm2-mnemo2-ensure.timer 2>/dev/null)
-if [ "$st" = enabled ] && [ "$act" = active ]; then
-  echo "TIMER_GREEN $(hostname) $(date -Iseconds) (enabled+active)"
+if [ "$st" = enabled ] && [ "$act" != active ]; then
+  systemctl --user start lcm2-mnemo2-ensure.timer >/dev/null 2>&1
+  act=$(systemctl --user is-active lcm2-mnemo2-ensure.timer 2>/dev/null)
+fi
+if [ "$st" = enabled ] && [ "$act" != active ]; then
+  # not surface-active right now: prove it FIRES via the service's journal
+  firings=$(journalctl --user -u lcm2-mnemo2-ensure.service --since "-15 min" \
+            --no-pager -q 2>/dev/null \
+            | grep -icE "Start(ed|ing) LCM2/MNEMO2 instance watchdog")
+else
+  firings=0
+fi
+firing=0
+[ "$act" = active ] && firing=1
+[ "${firings:-0}" -gt 0 ] && firing=1
+if [ "$st" = enabled ] && [ "$firing" = 1 ]; then
+  echo "TIMER_GREEN $(hostname) $(date -Iseconds) (enabled+firing: timer=$act recent_starts=$firings)"
   exit 0
 fi
-echo "TIMER RED $(hostname) (enabled=$st active=$act)"
+echo "TIMER RED $(hostname) (enabled=$st active=$act recent_starts=${firings:-?})"
 exit 1

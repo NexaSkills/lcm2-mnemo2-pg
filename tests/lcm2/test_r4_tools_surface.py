@@ -9,6 +9,21 @@ import json
 
 import pytest
 
+# SUITEGREEN-MIKE-0810: deterministic by-FILE import of OUR plugin files
+# (see the registered() fixture). tests/lcm2/_own.py is the suite-local
+# accessor (importlib-by-path + the meta_path finder that answers the
+# SHARED bare names from plugins/lcm2-pg); the conftest binds the same
+# helper as its module-level _own_module. The helper loads the file under
+# the bare key, so engine.py's own sibling imports stay on lcm2's route.
+import pathlib as _p
+
+_OWN_PY = _p.Path(__file__).resolve().parent / "_own.py"
+_spec = importlib.util.spec_from_file_location("_suite_own", _OWN_PY)
+_own_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_own_mod)
+_own_module = _own_mod.own
+
+
 import pgconn
 
 
@@ -46,9 +61,18 @@ VENDOR_TOOLS = [
 def registered(dsn, schema):
     import os
     os.environ["LCM2_DISABLE_MODEL"] = "1"  # deterministic extractive summaries
-    import engine as E
+    # SUITEGREEN-MIKE-0810: OUR engine/plugin_entry by FILE via the
+    # suite's deterministic accessor — a bare `import engine` in fixture
+    # SETUP resolves through whatever dir the last sibling fixture left
+    # on sys.path (mnemo conftest restores its own dir at teardown), and
+    # _pin_plugin's logstart window can be released before setup imports
+    # fire on some paths. In a 3-file run (mnemo r7 collected first) this
+    # line answered _mnemo2_impl_engine verbatim: "module
+    # '_mnemo2_impl_engine' has no attribute 'LCM2Engine'" x16. The
+    # conftest's own registered() fixture already uses this route.
+    E = _own_module("engine")
     eng = E.LCM2Engine(dsn=dsn, schema=schema)
-    entry = importlib.import_module("plugin_entry")
+    entry = _own_module("plugin_entry")
     ctx = FakeCtx()
     # one FakeCtx per test; the registered() fixture is function-scoped, so
     # sibling tests in the same run never race on its dicts
