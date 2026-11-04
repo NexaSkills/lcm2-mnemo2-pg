@@ -16,7 +16,7 @@ AGENTS=("$@"); [ ${#AGENTS[@]} -eq 0 ] && AGENTS=(lcm2agent mnemo2agent)
 
 # ensure the instance is up (start unit if inactive)
 systemctl --user start lcm2-mnemo2-pg.service 2>/dev/null || true
-PSQL="$PGBIN/psql -h $BASE/run -p $PORT -U $ROLE -d postgres"
+PSQL="${PSQL:-$PGBIN/psql -h $BASE/run -p $PORT -U $ROLE -d postgres}"
 for i in $(seq 1 20); do $PSQL -Atc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
 $PSQL -Atc 'select 1' >/dev/null || { echo "instance not reachable on $BASE/run:$PORT" >&2; exit 1; }
 
@@ -25,10 +25,12 @@ for db in lcm2db mnemo2db; do
     && echo "db $db exists" || { $PSQL -qc "CREATE DATABASE $db OWNER $ROLE"; echo "created db $db"; }
 done
 
-$PSQL -d mnemo2db -qc "CREATE SCHEMA IF NOT EXISTS shared"
+$PSQL -d mnemo2db -qc "CREATE SCHEMA IF NOT EXISTS \"shared\""
 for a in "${AGENTS[@]}"; do
-  $PSQL -d lcm2db   -qc "CREATE SCHEMA IF NOT EXISTS lcm2_$a"
-  $PSQL -d mnemo2db -qc "CREATE SCHEMA IF NOT EXISTS mnemo2_$a"
+  # W3TKT-MIKE-1220 #3: quoted identifiers (hyphenated profile ids are
+  # valid; a bare lcm2_<name-with-dash> is a SQL syntax error).
+  $PSQL -d lcm2db   -qc "CREATE SCHEMA IF NOT EXISTS \"lcm2_$a\""
+  $PSQL -d mnemo2db -qc "CREATE SCHEMA IF NOT EXISTS \"mnemo2_$a\""
 done
 
 echo "== verify =="

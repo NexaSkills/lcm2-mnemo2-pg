@@ -29,13 +29,21 @@ PORT=${PORT:-54331}
 ROLE=${ROLE:-mnemo201}
 # F-8: our own instance's psql (fresh-clone chain must not depend on the
 # sibling $HOME/lcm-pg cluster); first psql that exists wins.
-PSQL_BIN=""
-for _c in "$BASE/bin/psql" "$HOME/lcm2-mnemo2-pg/pg/bin/psql" "$HOME/lcm-pg/pg/bin/psql"; do
-  [ -x "$_c" ] && { PSQL_BIN=$_c; break; }
-done
+# W3TKT-MIKE-1220 (#3 harness hook): PSQL_BIN env, when set, wins over the
+# candidate list (targeted tests inject a fake psql; production callers
+# never set it, behaviour unchanged).
+PSQL_BIN="${PSQL_BIN:-}"
+if [ -z "$PSQL_BIN" ]; then
+  for _c in "$BASE/bin/psql" "$HOME/lcm2-mnemo2-pg/pg/bin/psql" "$HOME/lcm-pg/pg/bin/psql"; do
+    [ -x "$_c" ] && { PSQL_BIN=$_c; break; }
+  done
+fi
 PSQL_BIN=${PSQL_BIN:-psql}
 
 run() { if [ "$DRY" = "--dry-run" ]; then echo "DRY: $*"; else "$@"; fi; }
+# W3TKT-MIKE-1220 (#3 harness hook): an injected PSQL (targeted tests use a
+# fake psql) replaces the composed command; production never sets it.
+PSQL="${PSQL:-$PSQL_BIN -h $BASE/run -p $PORT -U $ROLE}"
 
 echo "== 1. profile =="
 if [ -z "$AGENT" ]; then
@@ -58,10 +66,17 @@ fi
 [ -n "$DRY" ] && { echo "DRY done"; exit 0; }
 
 echo "== 2. schemas on the dedicated instance =="
-PSQL="$PSQL_BIN -h $BASE/run -p $PORT -U $ROLE"
-$PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS lcm2_$AGENT"
-$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS mnemo2_$AGENT"
-$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared"
+# W3TKT-MIKE-1220 #3: every schema identifier here is DOUBLE-QUOTED (case-
+# preserved exactly as derived). A hyphenated profile name (demo-freshkey is
+# a VALID profile id — hermes_constants.PROFILE_ID_RE allows [a-z0-9_-])
+# produced the bare token CREATE SCHEMA IF NOT EXISTS lcm2_demo-freshkey:
+# the parser split it at the minus (lcm2_demo minus freshkey = syntax
+# error), §2 died under set -e, and onboarding aborted for the whole
+# profile. A quoted identifier accepts the grammar hermes itself allows.
+# Verified against pg_get_schema_identity-form on the live :54331 instance.
+$PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS \"lcm2_$AGENT\""
+$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS \"mnemo2_$AGENT\""
+$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS \"shared\""
 
 # Launch-scope schema leg (C2RESID2S): the ROOT gateway process bootstraps
 # the engine under schema lcm2_<basename(HERMES_HOME)> (pgconn.agent_schema,
@@ -73,7 +88,7 @@ $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared"
 _root_schema="lcm2_$(basename "$HERMES_BASE" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_' '_' | sed 's/_$//')"
 case "$_root_schema" in
   lcm2_|lcm2__) echo "launch schema name degenerate (skip): $_root_schema" ;;
-  *) $PSQL -d lcm2db -c "CREATE SCHEMA IF NOT EXISTS $_root_schema" 2>/dev/null \
+  *) $PSQL -d lcm2db -c "CREATE SCHEMA IF NOT EXISTS \"$_root_schema\"" 2>/dev/null \
        && echo "launch schema $_root_schema OK" \
        || echo "WARN launch schema $_root_schema not created (root surface would hit InvalidSchemaName)" ;;
 esac

@@ -104,10 +104,13 @@ done
 echo "== 4. per-agent schemas (idempotent; pass agent names as args) =="
 # lcm2db: private schemas ONLY (lcm2_<agent>, NO shared schema).
 # mnemo2db: private schemas (mnemo2_<agent>) PLUS the cross-agent 'shared' schema.
-$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared" >/dev/null
+$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS \"shared\"" >/dev/null
 for agent in "$@"; do
-  $PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS lcm2_$agent"
-  $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS mnemo2_$agent"
+  # W3TKT-MIKE-1220 #3: quoted identifiers — hyphenated profile ids are
+  # valid (hermes PROFILE_ID_RE) but a bare lcm2_demo-freshkey token is a
+  # SQL syntax error (same cure as onboard_profile.sh §2).
+  $PSQL -d lcm2db   -c "CREATE SCHEMA IF NOT EXISTS \"lcm2_$agent\""
+  $PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS \"mnemo2_$agent\""
 done
 
 echo "== 5. sanity =="

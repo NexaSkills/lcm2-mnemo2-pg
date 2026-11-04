@@ -67,6 +67,6 @@ done
 # stay absent. Per-profile schemas are owned by the plugins' own bootstrap
 # (schema_for_profile on boot), never by this watchdog. Surviving fixed
 # schema: shared. :54329 cluster untouched.
-$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS shared"           >/dev/null 2>&1
+$PSQL -d mnemo2db -c "CREATE SCHEMA IF NOT EXISTS \"shared\""           >/dev/null 2>&1
 if $PSQL -d postgres -Atc 'select 1' >/dev/null 2>&1; then note "OK instance healthy"; else note "FAIL instance unreachable"; fi
 tail -200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
