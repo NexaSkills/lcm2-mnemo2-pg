@@ -140,9 +140,17 @@ class LCM2Engine:
                 return float(env)
             except ValueError:
                 pass
-        try:  # host config: lcm.context_threshold (yaml, read-only)
-            from agent_config import get_lcm_context_threshold  # type: ignore
-            v = get_lcm_context_threshold()
+        # GAP-H2: the OLD route ('from agent_config import
+        # get_lcm_context_threshold') never existed vendor-wide — the
+        # module is absent, so the 0.75 default silently won regardless
+        # of config. The real host knob is compression.threshold
+        # (hermes_cli/config.py default 0.50). Read it from the LIVE
+        # profile's own config.yaml via the stdlib text-first reader
+        # (same profile-scoping rule as pgconn.agent_schema, so a routed
+        # gateway turn reads ITS profile's value). Fail-open to default.
+        try:
+            yg = _sib("_yamlget")
+            v = yg.get_config_key("compression.threshold")
             if v is not None:
                 return float(v)
         except Exception:
