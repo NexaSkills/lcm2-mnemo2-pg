@@ -91,11 +91,10 @@ class LCM2PgContextEngine(ContextEngine):
     def get_tool_schemas(self):
         return self._impl.get_tool_schemas()
 
+    # (no get_status forward: LCM2Engine has none; the base's concrete
+    # get_status reads the mirrored attrs below and returns accurate values)
     def handle_tool_call(self, name, args, **kwargs):
         return self._impl.handle_tool_call(name, args, **kwargs)
-
-    def get_status(self):
-        return self._impl.get_status()
 
     def should_compress_info(self, prompt_tokens=None):
         return self._impl.should_compress_info(prompt_tokens)
@@ -157,6 +156,55 @@ class LCM2PgContextEngine(ContextEngine):
 
     def clone_for_agent(self, *args, **kwargs):
         return LCM2PgContextEngine(dsn=self._impl.dsn, schema=self._impl.schema)
+
+
+# ── Host-read token state: explicit mirror (2026-11-05 zero-window cure) ──
+# agent/context_engine.py declares last_prompt_tokens / last_completion_tokens /
+# last_total_tokens / threshold_tokens / context_length / compression_count /
+# threshold_percent / protect_first_n / protect_last_n as CONCRETE base-class
+# attributes (defaults 0/3/6/0.75). Normal attribute lookup therefore FINDS the
+# base value on the wrapper and __getattr__ NEVER FIRES — the host reads
+# context window 0 / threshold 0 ("N / 0" in /usage and the context bar,
+# context-switch guard previews, preflight reads) even while the impl holds the
+# real numbers (update_model() delegates fine). LCM2Engine maintains every one
+# of these names itself (engine.py class body + update_from_response/
+# update_model), so reads AND host writes (agent_init's model_thresholds
+# assignment) delegate 1:1 to the impl. Only names the host actually touches
+# are mirrored — no speculative surface.
+_MIRRORED_ATTRS = (
+    "last_prompt_tokens", "last_completion_tokens", "last_total_tokens",
+    "last_real_prompt_tokens", "threshold_tokens", "context_length",
+    "compression_count", "threshold_percent", "protect_first_n",
+    "protect_last_n", "model_thresholds",
+)
+
+
+def _mirror_attr(name):
+    base = getattr(ContextEngine, name, 0)
+
+    def _get(self):
+        try:
+            impl = object.__getattribute__(self, "_impl")
+        except AttributeError:  # __init__ still in flight
+            return base
+        try:
+            return object.__getattribute__(impl, name)
+        except AttributeError:
+            return getattr(type(impl), name, base)
+
+    def _set(self, value):
+        setattr(object.__getattribute__(self, "_impl"), name, value)
+
+    return property(_get, _set)
+
+
+def _install_mirrors():
+    for _n in _MIRRORED_ATTRS:
+        setattr(LCM2PgContextEngine, _n, _mirror_attr(_n))
+
+
+_install_mirrors()
+del _install_mirrors
 
 
 _ACTIVE = [0]  # >0 while OUR frames are importing (F-2: defined BEFORE first _engage() use at module warm-call below)
