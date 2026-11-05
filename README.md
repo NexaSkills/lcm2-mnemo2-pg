@@ -52,10 +52,24 @@ tests-before-code, verification-before-assertion.
    `LCM2_ONBOARD_GLOBAL=1` to also author the global
    `$HERMES_HOME/plugins` links; off by default so a QA/fresh-clone run
    never rewires other profiles. `--dry-run` prints intended changes.
-4. Update = `git pull` + re-run the two scripts (idempotent). Plugin code is
-   symlinked, so a pull is live on next session load — no per-profile copies.
-5. Migrate: none yet (Phase 2/3 define vendor→native data migration; scripts
-   will land here as `scripts/migrate_*.sh`).
+4. `bash scripts/apply_surface_fixes.sh` (ALL profiles, idempotent; proven on
+   beez 2026-11-05) — the three surface classes that code alone does not
+   cover: (a) systemd drop-ins ordering gateway/webui/dashboard
+   AFTER/WANTS `lcm2-mnemo2-pg.service` (cold-boot race cure: without it a
+   lane beats the :54331 cluster and silently falls back to the built-in
+   compressor); (b) repo-owned threshold params — `LCM_CONTEXT_THRESHOLD=0.75`
+   in root + every profile `.env` (lcm2-pg = defacto compressor, fires at 75%
+   of window) and `compression.threshold 0.95` per profile via
+   `hermes config set` (built-in compressor = safeguard, instantiated only
+   when no engine loaded); (c) legacy disable — `lcm-pg` (and `mnemo-pg` v1
+   where present) disabled root + every profile, stale probe cluster units
+   (fix8/qa6/split) disabled so they cannot crash-loop at boot.
+5. Update = `git pull` + re-run setup scripts + `apply_surface_fixes.sh`
+   (all idempotent). Plugin code is symlinked, so a pull is live on next
+   session load — no per-profile copies. Then bounce gateway/webui/dashboard.
+6. Migrate: `scripts/migrate_legacy_lcm_to_lcm2.sh` (legacy old->new data,
+   idempotent; schema creation itself is automatic — engine bootstrap runs
+   `CREATE SCHEMA IF NOT EXISTS`, `setup_dbs.sh` the bank + `shared`).
 
 Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.
 
