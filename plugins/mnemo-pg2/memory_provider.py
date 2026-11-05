@@ -195,6 +195,8 @@ def _make_provider_module():
 
     pe_mod = _sibling_fn("plugin_entry")
     cap_mod = _sibling_fn("capture")
+    emb_mod = _sibling_fn("embed")
+    _warm_done = {"v": False}
 
     class _MnemoPg2Provider:
         """MemoryProvider for mnemo-pg2: the SAME Engine every mnemosyne_*
@@ -227,6 +229,24 @@ def _make_provider_module():
         def initialize(self, session_id: str, **kwargs) -> None:
             self._session_id = str(session_id or "")
             self._initialized = True
+            # P4-B hardening: cold-load the embedding model OUT of the
+            # turn path (daemon warm thread at session start). Without
+            # it the FIRST capture in a short-lived process can be cut
+            # off by CLI memory-shutdown before any write lands (the
+            # model load cost sat inside the host's killed sync worker).
+            if not _warm_done["v"]:
+                _warm_done["v"] = True
+                try:
+                    import threading as _th
+
+                    def _warm():
+                        try:
+                            emb_mod.embed_text("warm")
+                        except Exception:
+                            pass
+                    _th.Thread(target=_warm, daemon=True).start()
+                except Exception:
+                    pass
 
         def system_prompt_block(self) -> str:
             # Copy lives repo-side so it survives with no DB reachable;
