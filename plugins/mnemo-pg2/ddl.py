@@ -56,6 +56,8 @@ _CORE = [
         expired_at TIMESTAMPTZ,
         extract_entities BOOLEAN NOT NULL DEFAULT false,
         extract BOOLEAN NOT NULL DEFAULT false,
+        recall_count BIGINT NOT NULL DEFAULT 0,
+        last_recalled TIMESTAMPTZ,
         metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
         search tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
     )""",
@@ -71,6 +73,8 @@ _CORE = [
         tier TEXT,
         importance REAL NOT NULL DEFAULT 0.5,
         source_memory_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        recall_count BIGINT NOT NULL DEFAULT 0,
+        last_recalled TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         valid_until DATE,
         superseded_by TEXT,
@@ -462,6 +466,20 @@ def statements(kind: str = "private",
             stmt = _qualify_refs(stmt, self_schema)
         seen.add(stmt)
         sql.append(stmt)
+    # P4-A augment (idempotent, schema-qualified by hand: _REF_ON_RE only
+    # rewrites ON-references, never ALTER TABLE targets). Upgrades schemas
+    # created before the reinforcement columns existed; ADD COLUMN IF NOT
+    # EXISTS is a no-op on fresh CREATE'd schemas. Shared kind owns a
+    # working_memory too (gets the bump); episodic_memory is private-only.
+    _aug_tables = (["working_memory", "episodic_memory"] if kind == "private"
+                   else ["working_memory"])
+    for _t in _aug_tables:
+        sql.append(f'ALTER TABLE "{self_schema}"."{_t}" ADD COLUMN IF NOT '
+                   "EXISTS recall_count BIGINT NOT NULL DEFAULT 0")
+        sql.append(f'ALTER TABLE "{self_schema}"."{_t}" ADD COLUMN IF NOT '
+                   "EXISTS last_recalled TIMESTAMPTZ")
+    sql.append("CREATE INDEX IF NOT EXISTS wm_recall_idx ON "
+               f'"{self_schema}".working_memory(last_recalled)')
     if kind == "private":
         # bake the cross-agent views INSIDE the bootstrap txn (the Conn
         # holds the advisory lock here) — never from a second, unlocked

@@ -206,6 +206,24 @@ class Engine:
                         continue
                     results.append(_hit(r, "episodic"))
             self._bump_diagnost(cx, tiers, fallbacks=len(results) == 0)
+            # P4-A reinforcement (vendor beam.py:7349 parity): returned
+            # rows get a batch recall_count/last_recalled bump. Never
+            # allowed to break recall; env-off kill switch.
+            if results and os.environ.get("MNEMO2_RECALL_REINFORCE",
+                                          "1") != "0":
+                try:
+                    for _tier, _tbl in (("working", "working_memory"),
+                                         ("episodic", "episodic_memory")):
+                        _ids = [r["id"] for r in results
+                                if r.get("tier") == _tier]
+                        if _ids:
+                            cx.execute(
+                                "UPDATE " + _tbl + " SET recall_count ="
+                                " COALESCE(recall_count, 0) + 1,"
+                                " last_recalled = now()"
+                                " WHERE id = ANY(%s)", (_ids,))
+                except Exception:
+                    pass
         out = {"ok": True, "results": results, "bank": bank}
         if explain:
             out["explain"] = {
