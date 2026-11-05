@@ -116,6 +116,24 @@ class Engine:
                 "fanout": fanout, "status": "stored"}
 
     # -- recall -----------------------------------------------------------
+    def _ledger_new_turn(self, session_id="", turn_hash=""):
+        """P4-B turn-ticket (private method; reachable as the internal
+        name mnemosyne__ledger_new_turn via _dispatch, invisible on the
+        42-name tool surface). True = first time we see this turn."""
+        sid = str(session_id or "")
+        h = str(turn_hash or "")
+        if not h:
+            return {"ok": False, "error": "empty turn_hash"}
+        with self._cx("private") as cx:
+            rows = cx.query_dicts(
+                "INSERT INTO turn_ledger(session_id, turn_hash)"
+                " VALUES (%s, %s) ON CONFLICT DO NOTHING"
+                " RETURNING turn_hash", (sid, h))
+            if not rows:
+                cx.execute("DELETE FROM turn_ledger WHERE created_at <"
+                           " now() - interval '30 days'")
+            return {"ok": True, "is_new": bool(rows)}
+
     def recall(self, query: str, *, limit: int = 5, bank: str = "private",
                vec_weight: float | None = None, fts_weight: float | None = None,
                importance_weight: float | None = None,

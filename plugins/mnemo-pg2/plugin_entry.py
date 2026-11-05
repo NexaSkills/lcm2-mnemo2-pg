@@ -357,6 +357,22 @@ def _pre_llm_call(binding=None, **kw):
             body = str(r.get("content", "")).strip().replace("\n", " ")
             if body:
                 lines.append(f"- {body[:240]}")
+        # Shared (cross-agent) slice of the injection: same engine, surface
+        # bank; guarded so a shared miss never removes the private block.
+        slines = []
+        try:
+            res_s = _scoped(
+                lambda: _engine.Engine().shared_recall(msg, limit=2),
+                binding)
+            for r in (res_s or {}).get("results") or []:
+                body = str(r.get("content", "")).strip().replace("\n", " ")
+                if body and body[:240] not in lines:
+                    slines.append(f"- {body[:240]}")
+        except Exception:
+            slines = []
+        if slines:
+            lines.append("## Shared Memory (all agents)")
+            lines.extend(slines)
         return {"context": "\n".join(lines)} if len(lines) > 1 else None
     except Exception:
         return None

@@ -194,6 +194,7 @@ def _make_provider_module():
         _sibling_fn = _m.sibling
 
     pe_mod = _sibling_fn("plugin_entry")
+    cap_mod = _sibling_fn("capture")
 
     class _MnemoPg2Provider:
         """MemoryProvider for mnemo-pg2: the SAME Engine every mnemosyne_*
@@ -244,23 +245,42 @@ def _make_provider_module():
             try:
                 import json as _json
 
-                out = pe_mod._dispatch(
-                    "mnemosyne_recall",
-                    {"query": query, "limit": 5})
-                data = _json.loads(out)
-                mems = (data.get("memories") or data.get("results")
-                        or data.get("data") or [])
-                lines = []
-                for m in mems if isinstance(mems, list) else []:
-                    body = (m.get("content") or m.get("body") or "") \
-                        if isinstance(m, dict) else str(m)
-                    body = str(body).strip()
-                    if body:
-                        lines.append(f"- {body[:400]}")
-                if not lines:
+                def _lines(tool, args, cap):
+                    data = _json.loads(pe_mod._dispatch(tool, args))
+                    mems = (data.get("memories") or data.get("results")
+                            or data.get("data") or [])
+                    got = []
+                    for m in mems if isinstance(mems, list) else []:
+                        body = (m.get("content") or m.get("body") or "") \
+                            if isinstance(m, dict) else str(m)
+                        body = str(body).strip()
+                        if body:
+                            got.append(body[:400])
+                    return got[:cap]
+
+                lines = _lines("mnemosyne_recall",
+                               {"query": query, "limit": 5}, 8)
+                seen = set(lines)
+                # Shared (cross-agent) bank injection: SAME recall lane,
+                # bank=surface. Never let a shared miss break private
+                # injection — separate guard, small slice, deduped.
+                shared = []
+                try:
+                    shared = [s for s in _lines(
+                        "mnemosyne_recall",
+                        {"query": query, "limit": 3, "bank": "surface"}, 3)
+                        if s not in seen]
+                except Exception:
+                    shared = []
+                if not lines and not shared:
                     return ""
-                return ("Relevant memories (mnemo-pg2):\n"
-                        + "\n".join(lines[:8]))
+                block = ("Relevant memories (mnemo-pg2):\n"
+                         + "\n".join(lines)) if lines else ""
+                if shared:
+                    tail = ("Shared memories (mnemo-pg2, all agents):\n"
+                            + "\n".join(f"- {s}" for s in shared))
+                    block = (block + "\n" + tail) if block else tail
+                return block
             except Exception:
                 return ""
 
@@ -268,15 +288,47 @@ def _make_provider_module():
                       **kwargs) -> None:
             # Host contract (agent/memory_provider.py MemoryProvider.
             # sync_turn): called as sync_turn(user, assistant, *,
-            # session_id=..., messages=..., turn_author=...); the manager
-            # only passes messages/turn_author when our signature takes
-            # **kwargs, so a bare `messages=None` positional here made
-            # every turn log "got multiple values for argument
-            # 'messages'" (qa3 N-1). Accept the full shape and drop it.
-            # Write capture stays tool-mediated (mnemosyne_remember):
-            # automatic per-turn retention would write UNFILTERED chat
-            # into the agent's private schema (F-4 rows must be real
-            # memories).
+            # session_id=..., messages=..., turn_author=...).
+            # P4-B auto-capture (vendor parity), env-gated OFF by default:
+            # MNEMO2_AUTO_CAPTURE=1 enables it per profile/host. Rows land
+            # in the working tier as source='auto', low importance,
+            # session scope — sanitized (machine envelopes stripped),
+            # length-capped and ledger-idempotent (replayed turn = one
+            # row). Never raises into the host turn loop.
+            import os as _os
+            if _os.environ.get("MNEMO2_AUTO_CAPTURE", "0") != "1":
+                return None
+            try:
+                import json as _json
+                sid = str(kwargs.get("session_id") or "")
+                u = cap_mod.sanitize(user_content
+                                     if isinstance(user_content, str)
+                                     else (str(user_content or "")))
+                a = cap_mod.sanitize(assistant_content
+                                     if isinstance(assistant_content, str)
+                                     else (str(assistant_content or "")))
+                u = u if u and len(u) > 5 else None
+                a = a if a and len(a) > 5 else None
+                if u is None and a is None:
+                    return None
+                h = cap_mod.turn_hash(sid, u or "", a or "")
+                for text, label, cap_len in ((u, "USER", 2000),
+                                             (a, "ASSISTANT", 1200)):
+                    if text is None:
+                        continue
+                    ticket = _json.loads(pe_mod._dispatch(
+                        "mnemosyne__ledger_new_turn",
+                        {"session_id": sid,
+                         "turn_hash": f"{h}:{label[0].lower()}"}))
+                    if not ticket.get("is_new"):
+                        continue
+                    pe_mod._dispatch(
+                        "mnemosyne_remember",
+                        {"content": f"[{label}] {text[:cap_len]}",
+                         "importance": 0.3, "source": "auto",
+                         "scope": "session", "session_id": sid})
+            except Exception:
+                return None
             return None
 
         def on_session_end(self, messages) -> None:

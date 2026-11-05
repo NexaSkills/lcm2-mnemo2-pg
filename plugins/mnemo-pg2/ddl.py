@@ -168,6 +168,12 @@ _CORE = [
 ]
 
 _PRIVATE_ONLY = [
+    """CREATE TABLE IF NOT EXISTS turn_ledger (
+        session_id TEXT NOT NULL,
+        turn_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (session_id, turn_hash)
+    )""",
     # persona layer (private schemas only — vendor parity)
     """CREATE TABLE IF NOT EXISTS memoria_persona (
         id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
