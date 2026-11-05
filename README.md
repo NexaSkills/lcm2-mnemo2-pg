@@ -61,9 +61,11 @@ tests-before-code, verification-before-assertion.
    in root + every profile `.env` (lcm2-pg = defacto compressor, fires at 75%
    of window) and `compression.threshold 0.95` per profile via
    `hermes config set` (built-in compressor = safeguard, instantiated only
-   when no engine loaded); (c) legacy disable — `lcm-pg` (and `mnemo-pg` v1
-   where present) disabled root + every profile, stale probe cluster units
-   (fix8/qa6/split) disabled so they cannot crash-loop at boot.
+   when no engine loaded); (c) legacy disable — `lcm-pg` (and `mnemo-pg` v1 where present) disabled
+   root + every profile, stale probe cluster units (fix8/qa6/split) disabled
+   so they cannot crash-loop at boot; (d) memory-provider slot —
+   `memory.provider mnemosyne` root + every profile via `config set`
+   ('mnemo-pg2' fails the vendor provider-dir gate = silent built-in memory).
 5. Update = `git pull` + re-run setup scripts + `apply_surface_fixes.sh`
    (all idempotent). Plugin code is symlinked, so a pull is live on next
    session load — no per-profile copies. Then bounce gateway/webui/dashboard.

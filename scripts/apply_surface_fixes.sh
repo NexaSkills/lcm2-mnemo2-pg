@@ -86,7 +86,19 @@ done
 $HERMES config set compression.threshold "$THRESH_SAFEGUARD" >/dev/null 2>&1 \
   && say "FIX   root config safeguard -> $THRESH_SAFEGUARD" || true
 
-# ---------- 3. legacy machinery disabled ----------
+# ---------- 3b. memory provider slot (load/register fixes from fleet work) ----------
+# 'mnemo-pg2' FAILS the vendor memory-provider dir gate (silent empty slot ->
+# built-in memory). The bridge name that resolves is 'mnemosyne' (repo
+# plugins/mnemosyne hands the collector the PG provider from mnemo-pg2).
+for p in "" $profiles; do
+  [ -z "$p" ] && arg=() || arg=(-p "$p")
+  cur=$($HERMES "${arg[@]}" config get memory.provider 2>/dev/null | tail -1)
+  [ "$cur" = "mnemosyne" ] && continue
+  $HERMES "${arg[@]}" config set memory.provider mnemosyne >/dev/null 2>&1 \
+    && say "FIX   memory.provider mnemosyne (${p:-root}) [was: ${cur:-unset}]"
+done
+
+# ---------- 3c. legacy machinery disabled ----------
 for p in "" $profiles; do
   [ -z "$p" ] && arg=() || arg=(-p "$p")
   for plug in lcm-pg mnemo-pg; do
