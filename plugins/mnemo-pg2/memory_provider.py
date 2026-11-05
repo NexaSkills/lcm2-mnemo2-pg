@@ -197,6 +197,7 @@ def _make_provider_module():
     cap_mod = _sibling_fn("capture")
     emb_mod = _sibling_fn("embed")
     _warm_done = {"v": False}
+    _sleep_gate = {"t": 0.0}
 
     class _MnemoPg2Provider:
         """MemoryProvider for mnemo-pg2: the SAME Engine every mnemosyne_*
@@ -353,11 +354,40 @@ def _make_provider_module():
 
         def on_session_end(self, messages) -> None:
             # Session-boundary hook (fires at /new, /reset, /branch,
-            # real exit — never per-turn). Explicit no-op for the same
-            # reason as sync_turn: automatic extraction would write
-            # unfiltered transcript into the private schema. Without
-            # this attribute the manager logged a WARNING on every
-            # session end (qa3 N-1).
+            # real exit — never per-turn). P4-C: with
+            # MNEMO2_AUTO_CONSOLIDATE=1 this fires one ENGINE sleep()
+            # hygiene pass (vendor beam.sleep analogue): age-gated
+            # (>24h), consolidated_at-excluded, originals kept. Budget
+            # guards: per-process 30-min cooldown, skipped entirely
+            # when fewer than 10 rows are eligible (dry-run first),
+            # 15s join cap (vendor budget), daemon thread so a session
+            # end never blocks. Everything fail-soft.
+            import os as _os
+            if _os.environ.get("MNEMO2_AUTO_CONSOLIDATE", "0") != "1":
+                return None
+            import time as _t
+            now = _t.time()
+            if now - _sleep_gate["t"] < 1800:
+                return None
+            _sleep_gate["t"] = now
+            try:
+                import json as _json
+                import threading as _th
+
+                def _run():
+                    try:
+                        d = _json.loads(pe_mod._dispatch(
+                            "mnemosyne_sleep", {"dry_run": True}))
+                        if int(d.get("eligible", 0)) < 10:
+                            return
+                        pe_mod._dispatch("mnemosyne_sleep", {})
+                    except Exception:
+                        pass
+                th = _th.Thread(target=_run, daemon=True)
+                th.start()
+                th.join(15)
+            except Exception:
+                return None
             return None
 
         def shutdown(self) -> None:

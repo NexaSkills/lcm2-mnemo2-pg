@@ -58,6 +58,7 @@ _CORE = [
         extract BOOLEAN NOT NULL DEFAULT false,
         recall_count BIGINT NOT NULL DEFAULT 0,
         last_recalled TIMESTAMPTZ,
+        consolidated_at TIMESTAMPTZ,
         metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
         search tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
     )""",
@@ -484,6 +485,11 @@ def statements(kind: str = "private",
                    "EXISTS recall_count BIGINT NOT NULL DEFAULT 0")
         sql.append(f'ALTER TABLE "{self_schema}"."{_t}" ADD COLUMN IF NOT '
                    "EXISTS last_recalled TIMESTAMPTZ")
+        if _t == "working_memory":
+            # P4-C: consolidation marker (originals kept lossless; the
+            # marker only excludes rows from FUTURE sleep passes).
+            sql.append(f'ALTER TABLE "{self_schema}"."{_t}" ADD COLUMN IF '
+                       "NOT EXISTS consolidated_at TIMESTAMPTZ")
     sql.append("CREATE INDEX IF NOT EXISTS wm_recall_idx ON "
                f'"{self_schema}".working_memory(last_recalled)')
     if kind == "private":

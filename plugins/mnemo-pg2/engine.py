@@ -30,6 +30,18 @@ except ModuleNotFoundError:  # direct-by-path load (tests/probes): locate
         raise ImportError("mnemo-pg2: embed.py missing next to engine.py")
     _embed = _ilu.module_from_spec(_p)
     _p.loader.exec_module(_embed)
+try:  # P4-C consolidation LLM lane (same anchor discipline as embed)
+    import llm as _llm
+except ModuleNotFoundError:
+    import importlib.util as _ilu2
+    import os as _os2
+    _p2 = _ilu2.spec_from_file_location(
+        "mnemo2_llm_here", _os2.path.join(
+            _os2.path.dirname(_os2.path.abspath(__file__)), "llm.py"))
+    if _p2 is None or _p2.loader is None:  # pragma: no cover
+        raise ImportError("mnemo-pg2: llm.py missing next to engine.py")
+    _llm = _ilu2.module_from_spec(_p2)
+    _p2.loader.exec_module(_llm)
 
 DEFAULT_VEC_W = 0.5
 DEFAULT_FTS_W = 0.3
@@ -731,6 +743,11 @@ class Engine:
 
     # -- sleep (consolidation) -------------------------------------------------
     def sleep(self, *, all_sessions=False, dry_run=False, force=False) -> dict:
+        # P4-C vendor-parity consolidation: rows already consolidated are
+        # EXCLUDED (consolidated_at marker; originals are kept lossless —
+        # only the marker moves), the per-session digest gets an LLM
+        # summary through the proxy `aux` lane when reachable (concat
+        # fallback = previous behaviour), and the log row is parameterized.
         with self._cx() as cx:
             cx.execute("SELECT pg_advisory_lock(hashtext(%s))",
                        (f"mnemo2_sleep:{cx.schema}",))
@@ -739,7 +756,8 @@ class Engine:
                     "created_at < now() - interval '24 hours'"
                 rows = cx.query_dicts(
                     f"select id, content, session_id, importance from "
-                    f"working_memory where expired_at IS NULL AND {cond} "
+                    f"working_memory where expired_at IS NULL AND "
+                    f"consolidated_at IS NULL AND {cond} "
                     "order by created_at limit 500")
                 if dry_run:
                     cx.execute("SELECT pg_advisory_unlock(hashtext(%s))",
@@ -753,7 +771,8 @@ class Engine:
                 for sid, group in by_sess.items():
                     if not group:
                         continue
-                    summary = " | ".join(g["content"][:80] for g in group[:20])
+                    digest = " | ".join(g["content"][:80] for g in group[:20])
+                    summary = _llm.summarize(digest) or digest
                     eid = new_id("ep")
                     vec = _embed.embed_text(summary)
                     cx.execute(
@@ -768,14 +787,14 @@ class Engine:
                         "embedding) VALUES (%s,'episodic',%s::vector)",
                         (eid, _embed.to_pg_vector(vec)))
                     cx.execute(
-                        "UPDATE working_memory SET tier='episodic' WHERE id"
-                        " = any(%s)",
+                        "UPDATE working_memory SET tier='episodic',"
+                        " consolidated_at=now() WHERE id = any(%s)",
                         ([g["id"] for g in group],))
                     n_ep += 1
                 cx.execute(
                     "INSERT INTO consolidation_log(session_id,n_working,"
-                    "n_episodic) VALUES ('%s',%s,%s)" % (
-                        "all" if all_sessions else "", len(rows), n_ep))
+                    "n_episodic) VALUES (%s,%s,%s)",
+                    ("all" if all_sessions else "", len(rows), n_ep))
             finally:
                 cx.execute("SELECT pg_advisory_unlock(hashtext(%s))",
                            (f"mnemo2_sleep:{cx.schema}",))
