@@ -23,6 +23,11 @@ U="$HOME/.config/systemd/user"
 THRESH_ENGINE=${THRESH_ENGINE:-0.75}   # lcm2-pg trigger (fraction of window)
 THRESH_SAFEGUARD=${THRESH_SAFEGUARD:-0.95}  # built-in compressor fallback
 SURFACES="hermes-gateway hermes-webui hermes-dashboard"
+# host-agnostic: also cover lane-variant units actually present (e.g.
+# hermes-gateway-default.service on template-style hosts)
+for u in $(systemctl --user list-unit-files -t service --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^hermes-(gateway|webui|dashboard)[.-].*\.service$' | sed -E 's/\.service$//'); do
+  case " $SURFACES " in *" $u "*) ;; *) SURFACES="$SURFACES $u";; esac
+done
 
 say() { printf '%s\n' "$*"; }
 
