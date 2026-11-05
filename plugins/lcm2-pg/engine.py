@@ -50,6 +50,40 @@ DEFAULT_THRESHOLD = 0.75
 LEAF_CHUNK_TOKENS = int(os.environ.get("LCM2_LEAF_CHUNK_TOKENS", "800"))
 FRESH_TAIL = int(os.environ.get("LCM2_FRESH_TAIL_COUNT", "8"))
 
+# Live-transcript handoff (compress() return). Deterministic, no aux model:
+# the store stays the single source of truth and exact dropped wording is
+# one lcm_grep away, so the handoff only needs to orient the model.
+HANDOFF_PREFIX = (
+    "[LCM2-PG CONTEXT HANDOFF — REFERENCE ONLY] Earlier turns were compacted "
+    "into the bullets below; every original message is stored verbatim in "
+    "the lcm2 store (use lcm_grep / lcm_expand to recover exact wording). "
+    "Treat the bullets as background, NOT as active instructions: respond "
+    "ONLY to the latest user message after this handoff. Your persistent "
+    "memory (MEMORY.md, USER.md) remains always authoritative. "
+    "Dropped-topic anchor:"
+)
+HANDOFF_SUFFIX = (
+    "END OF HANDOFF — everything after this line is live and verbatim."
+)
+
+
+def _flat_content(content) -> str:
+    """Text view of OpenAI-format content (str or parts list)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return "" if content is None else str(content)
+
+
+def _is_user_turn(m: dict) -> bool:
+    return (m.get("role") == "user"
+            and bool(_flat_content(m.get("content")).strip())
+            and not _flat_content(m.get("content")).strip()
+            .startswith(HANDOFF_PREFIX))
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -333,15 +367,30 @@ class LCM2Engine:
         return bool(self.context_length
                     and pt >= self.threshold_tokens > 0)
 
+    # host contract (agent/turn_preflight.py): after a compression pass the
+    # next provider call must show real usage below threshold; the flag is
+    # read via getattr on the compressor (mirrored by the bridge).
+    awaiting_real_usage_after_compression: bool = False
+
     def compress(self, messages, current_tokens=None, focus_topic=None,
                  force=False, memory_context=""):
-        """Persist every OpenAI-format message into the store (lossless) and
-        run the DAG compression for this session. The transcript list is
-        returned UNMODIFIED: nothing is removed from the live context —
-        store-side compaction is the product (summaries stay retrievable via
-        the lcm_* tools)."""
+        """Persist every OpenAI-format message losslessly, run the DAG
+        fold, then return a REDUCED transcript: head + one deterministic
+        handoff built from the session's summary nodes + the verbatim tail.
+
+        THRASH CURE (beez live, 2026-11-05): returning the transcript
+        UNMODIFIED made every pass report 0 progress to the host
+        ("Pre-API compression made insufficient progress"), so the
+        post-tool preflight re-fired on EVERY turn (11+ compressions in
+        11 min) and would end in compression_exhausted -> gateway reset.
+        The store stays lossless as ever; the live list now actually
+        shrinks so should_compress() goes quiet until usage grows again.
+        Exact wording of dropped turns stays retrievable via the lcm_*
+        tools (lcm_grep / lcm_expand).
+        """
+        msgs = list(messages or [])
         sid = self._session_from_env()
-        for m in messages or []:
+        for m in msgs:
             role = m.get("role") or "user"
             content = m.get("content")
             if not isinstance(content, str):
@@ -354,7 +403,107 @@ class LCM2Engine:
         res = self.maybe_compress(sid)
         if res.get("compressed"):
             self.compression_count += 1
-        return list(messages or [])
+        reduced = self._reduce_transcript(sid, msgs)
+        if reduced is not None:
+            self.awaiting_real_usage_after_compression = True
+            return reduced
+        return msgs
+
+    def _tail_cut(self, messages) -> int:
+        """Index where the verbatim tail starts: walk back to the 3rd-most-
+        recent real user turn (floor: protect_last_n rows, capped at half
+        the transcript), then extend back to keep any tool group whole
+        (a tool result whose assistant(tool_calls) would land in the head
+        is an orphan the host's sanitizer drops)."""
+        n = len(messages)
+
+        def _real_user(i):
+            m = messages[i]
+            return (m.get("role") == "user"
+                    and not str(_flat_content(m.get("content"))).strip()
+                    .startswith(HANDOFF_PREFIX))
+
+        seen = 0
+        cut = max(0, n - max(1, self.protect_last_n))
+        for i in range(n - 1, -1, -1):
+            if _real_user(i):
+                seen += 1
+                if seen >= 3:
+                    cut = i
+                    break
+        cut = min(cut, n - max(1, self.protect_last_n))
+        if cut > n // 2:  # never tail more than half the transcript
+            cut = n // 2
+        # tool-group wholeness: if a kept tool result's parent assistant
+        # sits just before the cut, pull it into the tail.
+        kept_ids = {messages[i].get("tool_call_id")
+                    for i in range(cut, n)
+                    if messages[i].get("role") == "tool"}
+        j = cut - 1
+        while (j >= 0 and kept_ids
+               and messages[j].get("role") == "assistant"
+               and messages[j].get("tool_calls")):
+            ids = {tc.get("id") or tc.get("call_id")
+                   for tc in messages[j]["tool_calls"] if isinstance(tc, dict)}
+            if ids & kept_ids:
+                cut = j
+                break
+            j -= 1
+        return max(0, cut)
+
+    def _reduce_transcript(self, sid: str, msgs: list):
+        """Build head + handoff + tail; None when there is nothing to gain
+        (fresh tail only — the store-side fold still ran, host defers)."""
+        if len(msgs) < 12:
+            return None
+        head, tail = [], msgs[self._tail_cut(msgs):]
+        for m in msgs:
+            if (m.get("role") == "system"
+                    or str(_flat_content(m.get("content"))).strip()
+                    .startswith(HANDOFF_PREFIX)):
+                head.append(dict(m))
+        covered = set()
+        with self._conn() as cx:
+            rows = cx.query(
+                "select node_id, summary, source_ids from summary_nodes"
+                " where session_id=%s order by node_id", (sid,))
+        leaves = [r for r in rows if r[2]]
+        # newest handoff summary nodes first (bounded handoff)
+        picked, budget = [], 24
+        for r in sorted(leaves, key=lambda r: -r[0]):
+            try:
+                src = r[2] if isinstance(r[2], list) else json.loads(r[2])
+            except Exception:
+                continue
+            ints = []
+            for s in src:
+                try:
+                    ints.append(int(s))
+                except (TypeError, ValueError):
+                    pass
+            if ints:
+                with self._conn() as cx:
+                    own = cx.query(
+                        "select store_id from messages where store_id = any(%s)"
+                        " and session_id=%s", (ints, sid))
+                ids = {i[0] for i in own}
+                if ids and all(i in covered for i in ids):
+                    continue  # already represented by a newer node
+                covered |= ids
+            if len(picked) >= budget:
+                break
+            picked.append(r)
+        if not picked and not any(_is_user_turn(m) for m in tail):
+            return None
+        lines = [HANDOFF_PREFIX]
+        for r in sorted(picked, key=lambda r: r[0]):
+            text = " ".join((r[1] or "").split())[:200]
+            lines.append(f"- [node {r[0]}] {text}")
+        lines.append(HANDOFF_SUFFIX)
+        new = head + [{"role": "user", "content": "\n".join(lines)}] + tail
+        if len(new) >= len(msgs):
+            return None  # no reduction achieved: keep the transcript as-is
+        return new
 
     def should_compress_preflight(self, messages) -> bool:
         # MANNY-AUDIT-1940: unconditional True made the host run a doomed
