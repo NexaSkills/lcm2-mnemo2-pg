@@ -3,6 +3,7 @@
 # this host. Same philosophy as the lcm2 check lane: every line is
 # OK/WARN/FAIL, exit 0 only with zero FAILs. No writes, no service touches.
 set -uo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT=${PORT:-54331}
 RUNDIR=${RUNDIR:-$HOME/lcm2-mnemo2-pg/pg/run}
 ROLE=${ROLE:-mnemo201}
@@ -62,17 +63,37 @@ else warn "model cache absent ($CACHE) — first load will need network (~13 s)"
 HERMES=${HERMES:-hermes}
 dis=$($HERMES config get plugins.disabled 2>/dev/null || true)
 echo "$dis" | grep -q "lcm-pg" && ok "legacy lcm-pg disabled (root)" || warn "legacy lcm-pg NOT disabled (root)"
-# vendor mnemosyne must not be LOADED (it may simply not be installed;
-# the loader list is the truth, config grep is not)
+# vendor mnemosyne must not be LOADED — but NOTE: this repo itself ships
+# a 'mnemosyne' BRIDGE plugin (collector provider handoff); name in the
+# list is fine as long as it resolves INSIDE this repo. Provenance (the
+# symlink target), not the name, decides co-existence.
 if $HERMES plugins list 2>/dev/null | grep -E "^\S*\s*│?\s*mnemosyne" | grep -q enabled; then
-  fail "vendor mnemosyne plugin is LOADED (must never co-exist with mnemo-pg2)"
+  tgt=$(readlink -f "$HOME/.hermes/plugins/mnemosyne" 2>/dev/null)
+  case "$tgt" in
+    "$REPO_DIR/plugins/mnemosyne"|"$HOME"/lcm2-mnemo2-pg/plugins/mnemosyne)
+      ok "mnemosyne loaded = repo bridge (co-existence rule holds)" ;;
+    "")
+      warn "mnemosyne listed enabled but no plugins-dir link found (source unclear — inspect manually)" ;;
+    *)
+      fail "mnemosyne loaded from NON-REPO path: $tgt (vendor co-existence!)" ;;
+  esac
 else
   ok "vendor mnemosyne not loaded (co-existence rule holds)"
 fi
 
-# 7. boot ordering drop-in (gateway waits for the pg instance)
-if systemctl --user cat hermes-gateway.service 2>/dev/null | grep -q "lcm2-mnemo2-pg"; then ok "gateway boot drop-in ordered on lcm2-mnemo2-pg"
-else warn "gateway boot drop-in missing (apply_surface_fixes.sh)"; fi
+# 7. boot ordering drop-in (gateway waits for the pg instance) — unit
+# names vary by host layout (beez: hermes-gateway; trade/template:
+# lane-variant -default/-alpha/-demo), so probe every gateway variant.
+GWS=$(systemctl --user list-unit-files 2>/dev/null | awk '/^hermes-gateway/ {print $1}')
+if [ -z "$GWS" ]; then ok "no hermes-gateway units on this host (nothing to order)"
+else
+  found=0
+  for u in $GWS; do
+    systemctl --user cat "$u" 2>/dev/null | grep -q "lcm2-mnemo2-pg" && found=1
+  done
+  [ "$found" = 1 ] && ok "gateway boot drop-in ordered on lcm2-mnemo2-pg" \
+    || warn "gateway boot drop-in missing on: $(echo $GWS | tr '\n' ' ') (apply_surface_fixes.sh)"
+fi
 
 echo "----"
 echo "check_mnemo: FAIL=$FAILS WARN=$WARNS"
