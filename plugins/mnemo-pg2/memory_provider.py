@@ -473,25 +473,33 @@ def _make_provider_module():
     mod.__file__ = getattr(sys.modules.get(__name__), "__file__", __file__)
     mod.__path__ = []  # package-like for loader bookkeeping
     mod.MnemosyneMemoryProvider = _MnemoPg2Provider
+    # Legacy published attribute (F-1 anchor); NOT what registration hands
+    # out. The host's per-profile guard (memory_caller_scope.claim_instance)
+    # is keyed by instance IDENTITY, and the wrapper is stateless (every
+    # call routes through pe_mod._dispatch to the caller's own schema), so
+    # registration yields a FRESH wrapper per profile init: one shared
+    # Engine, one provider instance per agent — exactly what the host asks
+    # for on multiplexed gateways (was: one instance shared by all, so
+    # every profile after the first got memory_provider_instance_shared
+    # and dropped to built-in memory).
     mod.provider = _MnemoPg2Provider()
 
     def register_memory_provider(ctx):
         # The one call the activation path owns (plugins/memory/
         # _ProviderCollector.register_memory_provider).
         _shadow_legacy()
-        ctx.register_memory_provider(mod.provider)
+        ctx.register_memory_provider(_MnemoPg2Provider())
 
     mod.register_memory_provider = register_memory_provider
 
     def register(ctx):
         # Directory-discovery activation path (plugins/memory/
         # _load_provider_from_dir calls mod.register(ctx), NOT
-        # mod.register_memory_provider): yield the SAME provider
-        # instance the general lane published — one provider object,
-        # one Engine (F-1).
+        # mod.register_memory_provider): yield a fresh wrapper bound to
+        # the SAME Engine (F-1: one engine, per-profile instances).
         _shadow_legacy()
         try:
-            ctx.register_memory_provider(mod.provider)
+            ctx.register_memory_provider(_MnemoPg2Provider())
         except Exception:
             pass
 
