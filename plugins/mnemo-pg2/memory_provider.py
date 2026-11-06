@@ -334,6 +334,7 @@ def _make_provider_module():
                         side_agent=getattr(self, "_side_agent", None),
                         parent_session_id=getattr(self, "_parent_sid", "")):
                     return None  # S1a: non-primary context (vendor parity)
+                self._maybe_auto_sleep()
                 u = cap_mod.sanitize(user_content
                                      if isinstance(user_content, str)
                                      else (str(user_content or "")))
@@ -364,6 +365,43 @@ def _make_provider_module():
                 return None
             return None
 
+        def _maybe_auto_sleep(self) -> None:
+            # S3 (vendor _maybe_auto_sleep parity, __init__.py:2880-2925):
+            # on a turn that already passed context gates, cheap-count
+            # unconsolidated rows older than half the working TTL; past
+            # threshold (default 50, MNEMO2_AUTO_SLEEP_THRESHOLD) and
+            # past the shared reflection budget, fire ONE daemon-thread
+            # sleep. No timers, no daemons-with-loops: purely turn-
+            # opportunistic, exactly like vendor.
+            import os as _os
+            if _os.environ.get("MNEMO2_AUTO_SLEEP", "1") != "1":
+                return None
+            import json as _json
+            import threading as _th
+            import time as _t
+            try:
+                if _t.time() - _sleep_gate["t"] < 60:
+                    return None  # cheap in-process prefilter
+                thr = int(_os.environ.get("MNEMO2_AUTO_SLEEP_THRESHOLD",
+                                          "50"))
+                d = _json.loads(pe_mod._dispatch("mnemosyne_sleep",
+                                                 {"dry_run": True}))
+                if int(d.get("eligible", 0)) < thr:
+                    return None
+                # cross-process reflection budget (vendor parity; the
+                # meta-table claim is the real gate, DB is truth)
+                b = _json.loads(pe_mod._dispatch(
+                    "mnemosyne_reserve_budget",
+                    {"key": "auto_sleep", "secs": 1800}))
+                if not b.get("ok"):
+                    return None
+                _sleep_gate["t"] = _t.time()
+                _th.Thread(target=lambda: pe_mod._dispatch(
+                    "mnemosyne_sleep", {}), daemon=True).start()
+            except Exception:
+                return None
+            return None
+
         def on_session_end(self, messages) -> None:
             # Session-boundary hook (fires at /new, /reset, /branch,
             # real exit — never per-turn). P4-C: with
@@ -379,9 +417,8 @@ def _make_provider_module():
                 return None
             import time as _t
             now = _t.time()
-            if now - _sleep_gate["t"] < 1800:
-                return None
-            _sleep_gate["t"] = now
+            if now - _sleep_gate["t"] < 60:
+                return None  # cheap in-process prefilter
             try:
                 import json as _json
                 import threading as _th
@@ -391,6 +428,11 @@ def _make_provider_module():
                         d = _json.loads(pe_mod._dispatch(
                             "mnemosyne_sleep", {"dry_run": True}))
                         if int(d.get("eligible", 0)) < 10:
+                            return
+                        b = _json.loads(pe_mod._dispatch(
+                            "mnemosyne_reserve_budget",
+                            {"key": "auto_sleep", "secs": 1800}))
+                        if not b.get("ok"):
                             return
                         pe_mod._dispatch("mnemosyne_sleep", {})
                     except Exception:

@@ -783,6 +783,26 @@ class Engine:
                 " RETURNING reinforcement_count", (persona_id,))
         return {"ok": n is not None, "count": n}
 
+    # -- reflection budget (vendor _reserve_reflection_budget parity) -----
+    def reserve_budget(self, key: str = "auto_sleep",
+                      secs: float = 1800) -> dict:
+        """Atomic cross-process claim of a named cooldown window.
+        True = caller owns the window (and refreshed it); False = a
+        fresher claim exists elsewhere (any profile/process)."""
+        import time as _t
+        now = float(_t.time())
+        with self._cx("private") as cx:
+            got = cx.query_dicts(
+                "UPDATE meta SET value=%s WHERE key=%s AND COALESCE("
+                "NULLIF(value,'')::double precision, 0) < %s RETURNING key",
+                (str(now), f"budget:{key}", now - float(secs)))
+            if not got:
+                got = cx.query_dicts(
+                    "INSERT INTO meta(key,value) VALUES (%s,%s) "
+                    "ON CONFLICT (key) DO NOTHING RETURNING key",
+                    (f"budget:{key}", str(now)))
+        return {"ok": bool(got)}
+
     # -- sleep (consolidation) -------------------------------------------------
     def sleep(self, *, all_sessions=False, dry_run=False, force=False) -> dict:
         # P4-C vendor-parity consolidation: rows already consolidated are
