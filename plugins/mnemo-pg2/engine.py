@@ -42,6 +42,18 @@ except ModuleNotFoundError:
         raise ImportError("mnemo-pg2: llm.py missing next to engine.py")
     _llm = _ilu2.module_from_spec(_p2)
     _p2.loader.exec_module(_llm)
+try:  # S2: vendor extract_and_store_facts regex lane (pure, zero-model)
+    import facts as _facts
+except ModuleNotFoundError:
+    import importlib.util as _ilu3
+    import os as _os3
+    _p3 = _ilu3.spec_from_file_location(
+        "mnemo2_facts_here", _os3.path.join(
+            _os3.path.dirname(_os3.path.abspath(__file__)), "facts.py"))
+    if _p3 is None or _p3.loader is None:  # pragma: no cover
+        raise ImportError("mnemo-pg2: facts.py missing next to engine.py")
+    _facts = _ilu3.module_from_spec(_p3)
+    _p3.loader.exec_module(_facts)
 
 DEFAULT_VEC_W = 0.5
 DEFAULT_FTS_W = 0.3
@@ -124,6 +136,26 @@ class Engine:
                 "INSERT INTO memory_audit_events(memory_id,event,payload)"
                 " VALUES (%s,'remember',%s::jsonb)",
                 (mid, json.dumps({"bank": bank, "scope": scope})))
+            # S2 (vendor remember enrichment parity): typed fact
+            # annotations (regex lane, zero-model, capped 5) land on
+            # EVERY stored memory; heuristic KG ingest is always-on for
+            # rows that didn't already use the extract flag.
+            # Non-fatal by construction; env kill switches.
+            try:
+                if os.environ.get("MNEMO2_AUTO_FACTS", "1") == "1":
+                    for _k, _v in _facts.extract_facts(content):
+                        cx.execute(
+                            "INSERT INTO annotations(memory_id,kind,body)"
+                            " VALUES (%s,%s,%s)", (mid, _k, _v))
+                if (os.environ.get("MNEMO2_AUTO_TRIPLES", "1") == "1"
+                        and not extract):
+                    for t in _heuristic_triples(content)[:3]:
+                        cx.execute(
+                            "INSERT INTO triples(subject,predicate,object,"
+                            "source,source_memory_id)"
+                            " VALUES (%s,%s,%s,'ingest',%s)", (*t, mid))
+            except Exception:
+                pass
         return {"ok": True, "id": mid, "bank": bank,
                 "fanout": fanout, "status": "stored"}
 
@@ -180,7 +212,12 @@ class Engine:
                        w.session_id, w.source,
                        coalesce(1 - (e.embedding <=> %s::vector), 0) AS vec_sim,
                        coalesce(ts_rank_cd(w.search, plainto_tsquery('english', %s)), 0) AS fts,
-                       {temporal_expr} AS temporal
+                       {temporal_expr} AS temporal,
+                       -- S2: vendor fact_recall_ranking parity — typed
+                       -- annotation hits on the row add a small boost.
+                       EXISTS(SELECT 1 FROM annotations a
+                             WHERE a.memory_id = w.id
+                               AND a.body ILIKE '%%' || %s || '%%') AS fact_hit
                 FROM working_memory w
                 LEFT JOIN memory_embeddings e ON e.memory_id = w.id
                 WHERE 1=1{exp_filter}
@@ -191,7 +228,8 @@ class Engine:
             SELECT id, content, importance, created_at, scope, session_id,
                    source, vec_sim, fts, temporal,
                    (%s::real * vec_sim + %s::real * ln(1 + fts) + %s::real * importance
-                    + %s::real * temporal) AS score
+                    + %s::real * temporal
+                    + CASE WHEN fact_hit THEN 0.05 ELSE 0 END::real) AS score
             FROM cand
             ORDER BY score DESC LIMIT %s"""
         sql_episodic = f"""
@@ -213,7 +251,11 @@ class Engine:
         results: list[dict] = []
         tiers = []
         with self._cx(bank) as cx:
-            params = [qvec_str, query, now_param]
+            _toks = [t for t in "".join(
+                c if c.isalnum() else " " for c in query).split()
+                if len(t) >= 3 and not t.isdigit()]
+            _fw = max(_toks, key=len) if _toks else (query[:20] or "x")
+            params = [qvec_str, query, now_param, _fw]
             if exp_filter:
                 params.append(now_param)
             params += [query, vw, fw, iw, temporal_weight, limit]
