@@ -65,6 +65,15 @@ tests-before-code, verification-before-assertion.
 
 ## Deploy / update / migrate (Phase 1 scaffold)
 
+> **Routine update of an already-deployed host (the normal lane since S5):**
+> `bash scripts/update_mnemo_host.sh` — pull -> instance watchdog -> dbs ->
+> surfaces (incl. fastembed provisioning in ALL installed envs + resumable
+> `embed_migrate.sh`) -> read-only `check_mnemo.sh`. Services are never
+> bounced by scripts; when a bounce is warranted the script prints the
+> verified `systemctl --user restart …` line for the operator to run.
+> `check_mnemo.sh` runs standalone any time (exit 0 = healthy, WARNs are
+> advisory).
+
 1. `git clone https://github.com/NexaSkills/lcm2-mnemo2-pg ~/lcm2-mnemo2-pg && cd ~/lcm2-mnemo2-pg`
 2. `bash scripts/setup_instance.sh lcm2agent mnemo2agent`
    — initdb the dedicated cluster under `~/lcm2-mnemo2-pg/pg` (port 54331,
