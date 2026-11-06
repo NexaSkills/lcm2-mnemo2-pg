@@ -772,7 +772,23 @@ class Engine:
                     if not group:
                         continue
                     digest = " | ".join(g["content"][:80] for g in group[:20])
-                    summary = _llm.summarize(digest) or digest
+                    # S1c: ONE in-flight LLM call per DB instance for
+                    # this lane (pg_advisory lock = cross-process single
+                    # flight; waiting sessions hold a DB lock, never a
+                    # model slot). Fail-soft: lock trouble = skip LLM,
+                    # concat fallback still consolidates.
+                    summary = None
+                    try:
+                        cx.execute("SELECT pg_advisory_lock(hashtext"
+                                   "('mnemo2_llm_slot'))")
+                        try:
+                            summary = _llm.summarize(digest)
+                        finally:
+                            cx.execute("SELECT pg_advisory_unlock"
+                                       "(hashtext('mnemo2_llm_slot'))")
+                    except Exception:
+                        summary = None
+                    summary = summary or digest
                     eid = new_id("ep")
                     vec = _embed.embed_text(summary)
                     cx.execute(

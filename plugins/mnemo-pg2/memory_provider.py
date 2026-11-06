@@ -230,6 +230,13 @@ def _make_provider_module():
         def initialize(self, session_id: str, **kwargs) -> None:
             self._session_id = str(session_id or "")
             self._initialized = True
+            # S1a: remember the host-declared context (platform/
+            # side_agent/parent_session_id are in the host's provider
+            # init kwargs; vendor reads agent_context which our host
+            # does not pass — we derive equivalently).
+            self._platform = str(kwargs.get("platform") or "")
+            self._side_agent = kwargs.get("side_agent")
+            self._parent_sid = str(kwargs.get("parent_session_id") or "")
             # P4-B hardening: cold-load the embedding model OUT of the
             # turn path (daemon warm thread at session start). Without
             # it the FIRST capture in a short-lived process can be cut
@@ -321,7 +328,12 @@ def _make_provider_module():
                 return None
             try:
                 import json as _json
-                sid = str(kwargs.get("session_id") or "")
+                sid = str(kwargs.get("session_id") or "") or self._session_id
+                if not cap_mod.context_ok(
+                        sid, platform=getattr(self, "_platform", ""),
+                        side_agent=getattr(self, "_side_agent", None),
+                        parent_session_id=getattr(self, "_parent_sid", "")):
+                    return None  # S1a: non-primary context (vendor parity)
                 u = cap_mod.sanitize(user_content
                                      if isinstance(user_content, str)
                                      else (str(user_content or "")))

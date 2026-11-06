@@ -80,6 +80,32 @@ def sanitize(text: Optional[str]) -> Optional[str]:
     return t
 
 
+# --- S1a write_policy context-skip (vendor _skip_contexts parity,
+# hermes_memory_provider/__init__.py:1702; the host never passes
+# agent_context, so we derive the context from what the host DOES give
+# us: platform/side_agent/parent_session_id kwargs at initialize, and
+# the cron scheduler's session-id shape YYYYMMDD_HHMMSS_hex).
+import os as _os
+
+_DEFAULT_SKIP = ("cron", "flush", "subagent", "background", "skill_loop")
+_CRON_SESSION_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{4,}")
+
+
+def context_ok(session_id: str = "", *, platform: str = "",
+               side_agent=None, parent_session_id: str = "") -> bool:
+    """False = non-primary context; capture/sleep lanes must skip it."""
+    skips = {s.strip().lower() for s in _os.environ.get(
+        "MNEMO2_SKIP_CONTEXTS", ",".join(_DEFAULT_SKIP)).split(",") if s}
+    if platform and platform.strip().lower() in skips:
+        return False
+    if side_agent or (parent_session_id or ""):
+        return False
+    if _os.environ.get("MNEMO2_SKIP_CRON_SESSIONS", "1") == "1" \
+            and _CRON_SESSION_RE.match(session_id or ""):
+        return False
+    return True
+
+
 def turn_hash(session_id: str, user: str, assistant: str) -> str:
     h = hashlib.sha256()
     h.update((session_id or "").encode("utf-8", "replace"))
