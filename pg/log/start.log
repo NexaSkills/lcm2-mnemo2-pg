@@ -1,0 +1,2 @@
+2026-11-01 10:34:23.528 SAST [1351925] LOG:  redirecting log output to logging collector process
+2026-11-01 10:34:23.528 SAST [1351925] HINT:  Future log output will appear in directory "log".

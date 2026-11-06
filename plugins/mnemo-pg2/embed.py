@@ -20,13 +20,13 @@ import math
 import os
 import re
 import threading
+import time
 import unicodedata
 
 _WORDS = re.compile(r"[a-z0-9]+")
 _DEFAULT_FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
-_state = {"provider": None, "model": None, "fail": False, "lock":
-          threading.Lock()}
+_state = {"lock": threading.Lock(), "warned": False, "next_try": 0.0}
 _fe_model = None  # loaded fastembed TextEmbedding singleton
 
 
@@ -77,20 +77,33 @@ def _configured() -> tuple[str, str]:
 
 
 def _get_fe():
-    """Load the fastembed singleton once; None after a permanent failure."""
+    """Load the fastembed singleton; None (retryable after a 60 s cooldown)
+    while unavailable. A TRANSIENT boot failure (boot-time cache-lock
+    stampede on a big model download) must never become permanent
+    process state — every later call gets another chance."""
     global _fe_model
-    if _fe_model is not None or _state["fail"]:
+    if _fe_model is not None:
         return _fe_model
+    now = time.monotonic()
+    if now < _state["next_try"]:
+        return None
     with _state["lock"]:
-        if _fe_model is not None or _state["fail"]:
+        if _fe_model is not None:
             return _fe_model
+        _state["next_try"] = time.monotonic() + 60.0  # cooldown up front:
+        # losers of a concurrent-load stampede don't re-enter immediately
         try:
             from fastembed import TextEmbedding
             _fe_model = TextEmbedding(
                 model_name=_configured()[1], cache_dir=_cache_dir())
-        except Exception:
-            _state["fail"] = True
-            _fe_model = None
+        except Exception as e:
+            if not _state["warned"]:
+                _state["warned"] = True
+                import logging
+                logging.getLogger("mnemo2.embed").warning(
+                    "fastembed load failed (hashed fallback until it "
+                    "loads): %s", e)
+            return None
     return _fe_model
 
 
@@ -132,7 +145,10 @@ def _fe_encode(texts: list[str], prefix: str) -> list[list[float]] | None:
                 fe.embed([(prefix + t) if prefix else (t or "")
                           for t in texts])]
     except Exception:
-        _state["fail"] = True  # runtime break = downgrade like load fail
+        # runtime break: drop the instance; _get_fe cooldown will reload
+        global _fe_model
+        _fe_model = None
+        _state["next_try"] = time.monotonic() + 60.0
         return None
 
 

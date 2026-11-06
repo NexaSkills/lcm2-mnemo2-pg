@@ -35,7 +35,7 @@ def fastembed_on(monkeypatch):
     monkeypatch.setenv("MNEMO2_EMBED_MODEL", "fastembed")
     monkeypatch.setattr(_embed_mod, "_fe_model", None)
     monkeypatch.setattr(_embed_mod, "_state", dict(
-        _embed_mod._state, fail=False))
+        _embed_mod._state, next_try=0.0, warned=False))
     if not _embed_mod.warm():
         pytest.skip("fastembed unavailable on this host")
     yield
@@ -50,7 +50,8 @@ def test_no_llm_in_embed_lane():
         root = m.split(".")[0]
         assert root in {
             "__future__", "hashlib", "math", "os", "re", "threading",
-            "unicodedata", "json", "urllib", "fastembed", "numpy"}, root
+            "time", "unicodedata", "json", "urllib", "fastembed",
+            "numpy", "logging"}, root
 
 
 def test_paraphrase_semantic_pair(fastembed_on):

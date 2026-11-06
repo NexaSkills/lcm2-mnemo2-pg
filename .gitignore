@@ -1,3 +1,5 @@
 models/fastembed/
 __pycache__/
 .pytest_cache/
+scratch/
+pg/data/
