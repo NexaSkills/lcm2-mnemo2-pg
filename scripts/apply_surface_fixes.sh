@@ -112,6 +112,17 @@ FOUND_ENV=0
 for PYCAND in "$HOME"/.hermes/installs/*/environments/*/venv/bin/python; do
   [ -x "$PYCAND" ] || continue
   FOUND_ENV=1
+  # X-4 class cure: hermes update rebuilds envs WITHOUT psycopg -> engines
+  # fail-loud at import and the host silently loses the PG lanes.
+  if ! "$PYCAND" -c "import psycopg, psycopg_pool" 2>/dev/null; then
+    if command -v uv >/dev/null; then
+      uv pip install "psycopg[binary]" psycopg_pool --python "$PYCAND" >/dev/null 2>&1 \
+        && say "FIX   psycopg installed: ${PYCAND%/bin/python}" \
+        || say "WARN  psycopg install failed: ${PYCAND%/bin/python}"
+    else
+      say "WARN  no uv; install psycopg into ${PYCAND%/bin/python} manually"
+    fi
+  fi
   if "$PYCAND" -c "import fastembed" 2>/dev/null; then
     say "OK    fastembed present: ${PYCAND%/bin/python}"
   elif command -v uv >/dev/null; then

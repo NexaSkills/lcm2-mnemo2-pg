@@ -43,16 +43,22 @@ npriv=$(psql_q "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'mnemo2%'")
 if [ "${baked:-0}" -ge "$npriv" ] && [ "$npriv" -gt 0 ]; then ok "shared_embeddings baked in $baked/$npriv private schemas"
 else warn "shared_embeddings baked only $baked/$npriv (connect bakes on first use; check bake lane)"; fi
 
-# 4. fastembed importable in EVERY installed env
-nenv=0; nbad=0
+# 4. fastembed AND psycopg importable in EVERY installed env (X-4 class:
+# hermes update can rebuild envs without psycopg -> engines fail-loud)
+nenv=0; nbad=0; npbad=0
 for pyc in "$HOME"/.hermes/installs/*/environments/*/venv/bin/python; do
   [ -x "$pyc" ] || continue
   nenv=$((nenv+1))
   "$pyc" -c "import fastembed" 2>/dev/null || { nbad=$((nbad+1)); echo "      missing fastembed: ${pyc%/bin/python}"; }
+  "$pyc" -c "import psycopg, psycopg_pool" 2>/dev/null || { npbad=$((npbad+1)); echo "      missing psycopg: ${pyc%/bin/python}"; }
 done
 if [ "$nenv" = 0 ]; then warn "no installed venvs found (hermes not installed here?)"
-elif [ "$nbad" = 0 ]; then ok "fastembed importable in all $nenv installed envs"
-else fail "fastembed missing in $nbad/$nenv installed envs (gateway env may be one of them)"; fi
+else
+  [ "$nbad" = 0 ] && ok "fastembed importable in all $nenv installed envs" \
+    || fail "fastembed missing in $nbad/$nenv installed envs (gateway env may be one of them)"
+  [ "$npbad" = 0 ] && ok "psycopg importable in all $nenv installed envs" \
+    || fail "psycopg missing in $npbad/$nenv installed envs (X-4 class — run apply_surface_fixes.sh)"
+fi
 
 # 5. model cache provisioned somewhere warmable (cache dir env or repo default)
 CACHE=${MNEMO2_EMBED_CACHE:-$HOME/lcm2-mnemo2-pg/models/fastembed}
