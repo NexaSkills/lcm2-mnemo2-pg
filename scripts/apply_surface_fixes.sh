@@ -87,6 +87,21 @@ for p in $profiles; do
       || { $HERMES -p "$p" config set compression.threshold "$THRESH_SAFEGUARD" >/dev/null && say "FIX   profile $p safeguard -> $THRESH_SAFEGUARD"; }
   fi
 done
+# ---------- 2b. mnemo-pg2 auto-lane switches (root .env) ----------
+# systemd surfaces (gateway multiplex) see ONLY root .env for process env;
+# profile .env is per-CLI. S1-S4 vendor-parity defaults live IN CODE
+# (auto-sleep ON, context-skip ON, extraction ON, budget in meta table);
+# capture/consolidate stay env-gated and are pinned ON fleet-wide here.
+for kv in "MNEMO2_AUTO_CAPTURE=1" "MNEMO2_AUTO_CONSOLIDATE=1"; do
+  k=${kv%%=*}
+  if grep -q "^$k=" "$HOME/.hermes/.env" 2>/dev/null; then
+    say "OK    root .env $k present"
+  else
+    printf '\n# mnemo-pg2 vendor-parity auto lanes (repo-owned)\n%s\n' "$kv" >> "$HOME/.hermes/.env"
+    say "FIX   root .env pinned $kv"
+  fi
+done
+
 # root config lane too (config set only — never hand-edit)
 $HERMES config set compression.threshold "$THRESH_SAFEGUARD" >/dev/null 2>&1 \
   && say "FIX   root config safeguard -> $THRESH_SAFEGUARD" || true

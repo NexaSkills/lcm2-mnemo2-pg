@@ -22,6 +22,28 @@ Both are PG-native from the ground up: zero sqlite code, zero sqlite fallback pa
 - Phase 2 — `lcm2-pg` plugin (TDD).
 - Phase 3 — `mnemo-pg2` plugin (TDD, private + shared).
 - Deploy/update/migrate scripts land here as their phases complete.
+- **Vendor parity (S program): complete.** `mnemo-pg2` now matches the
+  deployed vendor `mnemosyne` behaviour on every lane (S1-S4 below;
+  source-verified against the pinned vendor tree). One documented
+  deviation: none outstanding at behaviour level.
+
+### Vendor-parity lanes in mnemo-pg2 (S1-S4, 2026-11-06)
+
+| Lane | Vendor counterpart | Switch (default) |
+|---|---|---|
+| Auto-capture of every primary-context turn (sanitizer + dedup ledger) | `sync_turn` | `MNEMO2_AUTO_CAPTURE` (off in code; rollout pins `1` in root `.env`) |
+| write_policy context-skip (cron/subagent/flush/background/skill_loop + cron session-id shape) | `_skip_contexts` | `MNEMO2_SKIP_CONTEXTS`, `MNEMO2_SKIP_CRON_SESSIONS` (on) |
+| Typed fact annotations on every stored memory (pure regex, zero-model) + always-on heuristic KG ingest | `extract_and_store_facts` / `_ingest_graph` | `MNEMO2_AUTO_FACTS`, `MNEMO2_AUTO_TRIPLES` (on) |
+| Fact-hit ranking boost in recall | fact ranking | always on |
+| Recall reinforcement (`recall_count` / `last_recalled`) | beam reinforcement | always on |
+| Consolidation at session end + turn-opportunistic auto-sleep (threshold 50 eligible rows) | `beam.sleep` / `_maybe_auto_sleep` | `MNEMO2_AUTO_CONSOLIDATE` (off in code; rollout pins `1`), `MNEMO2_AUTO_SLEEP` (on), `MNEMO2_AUTO_SLEEP_THRESHOLD` |
+| Cross-process reflection budget (single-flight; `meta` table claims; LLM calls serialize behind `mnemo2_llm_slot`) | `_reserve_reflection_budget` | always on |
+| LLM consolidation summaries via the configured proxy (concat fallback when unreachable) | reflection | `MNEMO2_LLM_URL` / `MNEMO2_LLM_MODEL` / `MNEMO2_LLM_KEY` |
+
+`scripts/consolidate_stale.sh` is a MANUAL on-demand hygiene pass (deliberately
+not installed as a timer anywhere; parity triggers are event-driven).
+Edge-parameter audit vs the vendor contract: `docs/parity-s4-findings.md`
+(zero deviations).
 
 ## Layout (target)
 
