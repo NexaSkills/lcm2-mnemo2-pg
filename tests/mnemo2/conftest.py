@@ -320,6 +320,20 @@ def _own_dir_first():
     _iso_sys.path[:] = _saved
 
 
+@pytest.fixture(autouse=True)
+def _env_restore():
+    # Env-hygiene between tests: multi-agent tests (register_agent)
+    # snapshot/restore env around HANDLER calls, but a test that pokes
+    # os.environ directly (or whose teardown died mid-way) can leak
+    # MNEMO2_SCHEMA pointing at a dropped schema into the next module
+    # (template s4 cascade, 2026-11-06). Hard snapshot/restore around
+    # EVERY test makes module order irrelevant.
+    _snap = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(_snap)
+
+
 # fix6 N-3 (DEFINITIVE cross-suite arbitration, sibling half): install the
 # shared bare-key arbiter (see tests/lcm2/_bare_arbiter.py) so a combined
 # run behaves exactly like the two isolated runs. The finder is inert for
