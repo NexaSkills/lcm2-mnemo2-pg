@@ -371,7 +371,7 @@ class Engine:
                 "from working_memory where id=%s", (memory_id,))
         if not row:
             return {"ok": False, "error": "not found", "memory": None}
-        return {"ok": True, "memory": _jsonable(row[0])}
+        return {"ok": True, "memory": _jsonable(row)[0]}
 
     def update(self, memory_id: str, *, content: str | None = None,
                importance: float | None = None,
