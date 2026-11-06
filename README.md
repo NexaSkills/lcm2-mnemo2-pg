@@ -75,7 +75,7 @@ tests-before-code, verification-before-assertion.
    `$HERMES_HOME/plugins` links; off by default so a QA/fresh-clone run
    never rewires other profiles. `--dry-run` prints intended changes.
 4. `bash scripts/apply_surface_fixes.sh` (ALL profiles, idempotent; proven on
-   beez 2026-11-05) — the three surface classes that code alone does not
+   reference deployment) — the three surface classes that code alone does not
    cover: (a) systemd drop-ins ordering gateway/webui/dashboard
    AFTER/WANTS `lcm2-mnemo2-pg.service` (cold-boot race cure: without it a
    lane beats the :54331 cluster and silently falls back to the built-in

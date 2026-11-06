@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# apply_surface_fixes.sh — idempotent post-clone surface fixes proven on beez
+# apply_surface_fixes.sh — idempotent post-clone surface fixes (proven live)
 # 2026-11-05. Run AFTER setup_dbs.sh, BEFORE bouncing the gateway, as the user
-# who owns the systemd --user units. Host-agnostic (Omarchy fleet).
+# who owns the systemd --user units. Host-agnostic.
 #
-# Covers exactly three classes (all verified live on beez):
+# Covers exactly three classes (all verified live):
 #   1. BOOT ORDER: gateway/webui/dashboard must start AFTER the lcm2-mnemo2-pg
 #      cluster (:54331) — without this, a cold boot races the engine's DB
 #      connect and the lane silently falls back to the built-in compressor.
