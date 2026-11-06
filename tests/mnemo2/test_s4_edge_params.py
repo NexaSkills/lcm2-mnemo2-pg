@@ -16,6 +16,12 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "plugins" / "mnemo-pg2"))
 
 import plugin_entry as pe  # noqa: E402
+import engine as _engine_mod  # noqa: E402
+
+# The bare 'pgconn' key may legitimately be bound to lcm2-pg's file after
+# a host-boot simulation (test_f1_own_registration reproduces that state
+# on purpose). Take the module THE PRODUCT uses, from its own namespace.
+_pg = _engine_mod.pgconn
 
 
 def call(tool, **args):
@@ -40,7 +46,7 @@ def live():
     yield mk
     e_ids = tuple(ids)
     if e_ids:
-        import pgconn
+        pgconn = _pg  # anchored: engine's own connection module
         with pgconn.connect(None) as cx:
             cx.execute("delete from annotations where memory_id = any(%s)",
                        (list(e_ids),))
@@ -109,7 +115,7 @@ def test_triple_supersede_roundtrip(live):
     objs = [row.get("object") for row in (now.get("facts")
                                           or now.get("rows") or [])]
     assert "ridge-b" in objs
-    import pgconn
+    pgconn = _pg  # anchored: engine's own connection module
     with pgconn.connect(None) as cx:
         cx.execute("delete from triples where subject='s4probe'")
 
@@ -125,7 +131,7 @@ def test_canonical_replace_keeps_history(live):
                name="s4name")
     body = json.dumps(got)
     assert "second version" in body
-    import pgconn
+    pgconn = _pg  # anchored: engine's own connection module
     with pgconn.connect(None) as cx:
         cx.execute("delete from canonical_facts where category='s4cat'")
 
