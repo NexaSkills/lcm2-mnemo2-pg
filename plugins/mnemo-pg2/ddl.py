@@ -12,9 +12,10 @@ kind='shared'  -> the ONE shared surface schema (cross-agent, R5): working
 """
 from __future__ import annotations
 
+import os
 import re
 
-VEC_DIM = 256
+VEC_DIM = int(os.environ.get("MNEMO2_EMBED_DIM", "384"))
 
 # Vendor CREATE TABLE wildcard parity (tests/mnemo2_vendor_tables.txt).
 # Vendor vec0 virtual tables (vec_working, vec_episodes) are sqlite-only
@@ -90,7 +91,7 @@ _CORE = [
     f"""CREATE TABLE IF NOT EXISTS memory_embeddings (
         memory_id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'working',
-        embedding VECTOR({VEC_DIM}) NOT NULL,
+        embedding VECTOR({VEC_DIM}),
         norm REAL,
         model TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -395,8 +396,16 @@ _SHARED_VIEWS = [
     " valid_until, superseded_by, expired_at, extract_entities, extract,"
     " recall_count, last_recalled, consolidated_at, metadata, search FROM"
     " {SH}.working_memory; END; END IF; END $$",
-    "DO $$ BEGIN IF to_regclass('{SH}.memory_embeddings') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_embeddings AS SELECT * FROM {SH}.memory_embeddings; END IF; END $$",
-    "DO $$ BEGIN IF to_regclass('{SH}.canonical_facts') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_canonical AS SELECT * FROM {SH}.canonical_facts; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.memory_embeddings') IS NOT NULL THEN"
+    " BEGIN CREATE OR REPLACE VIEW {SELF}.shared_embeddings AS SELECT *"
+    " FROM {SH}.memory_embeddings; EXCEPTION WHEN others THEN DROP VIEW"
+    " IF EXISTS {SELF}.shared_embeddings; CREATE VIEW {SELF}.shared_embeddings"
+    " AS SELECT * FROM {SH}.memory_embeddings; END; END IF; END $$",
+    "DO $$ BEGIN IF to_regclass('{SH}.canonical_facts') IS NOT NULL THEN"
+    " BEGIN CREATE OR REPLACE VIEW {SELF}.shared_canonical AS SELECT *"
+    " FROM {SH}.canonical_facts; EXCEPTION WHEN others THEN DROP VIEW"
+    " IF EXISTS {SELF}.shared_canonical; CREATE VIEW {SELF}.shared_canonical"
+    " AS SELECT * FROM {SH}.canonical_facts; END; END IF; END $$",
 ]
 
 _SANDBOX_SHARED_RE = __import__("re").compile(r"^[a-z0-9_]+$")

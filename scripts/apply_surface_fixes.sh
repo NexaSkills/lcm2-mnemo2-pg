@@ -19,6 +19,7 @@
 set -euo pipefail
 
 HERMES=${HERMES:-hermes}
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 U="$HOME/.config/systemd/user"
 THRESH_ENGINE=${THRESH_ENGINE:-0.75}   # lcm2-pg trigger (fraction of window)
 THRESH_SAFEGUARD=${THRESH_SAFEGUARD:-0.95}  # built-in compressor fallback
@@ -101,6 +102,40 @@ for kv in "MNEMO2_AUTO_CAPTURE=1" "MNEMO2_AUTO_CONSOLIDATE=1"; do
     say "FIX   root .env pinned $kv"
   fi
 done
+
+# ---------- 2c. embeddings provisioning (S5) ----------
+# fastembed in the facts.json ACTIVE env (model cache + dim ALTER +
+# re-embed + HNSW happen via scripts/embed_migrate.sh, resumable).
+ACTIVE_ENV=$(python3 - "$HOME/.hermes" <<'PY'
+import glob, json, os, sys
+hb = sys.argv[1]
+try:
+    f = glob.glob(os.path.join(hb, "installs", "*", "facts.json"))[0]
+    d = json.load(open(f))
+    print(d["packages"]["venv"]["environment"])
+except Exception:
+    print("")
+PY
+)
+if [ -n "$ACTIVE_ENV" ] && [ -x "$ACTIVE_ENV/bin/python" ]; then
+  if "$ACTIVE_ENV/bin/python" -c "import fastembed" 2>/dev/null; then
+    say "OK    active env imports fastembed"
+  elif command -v uv >/dev/null; then
+    uv pip install fastembed --python "$ACTIVE_ENV/bin/python" >/dev/null 2>&1 \
+      && say "FIX   active env fastembed installed" \
+      || say "WARN  fastembed install failed (semantic recall falls back to hashed)"
+  else
+    say "WARN  no uv; install fastembed into $ACTIVE_ENV manually"
+  fi
+  MIGLOG=/tmp/embed_migrate.$(date +%s).log
+  if PYTHON="$ACTIVE_ENV/bin/python" bash "$REPO_DIR/scripts/embed_migrate.sh" >"$MIGLOG" 2>&1; then
+    say "OK    embed_migrate ($(grep -c ': embedded' "$MIGLOG") schemas)"
+  else
+    say "WARN  embed_migrate failed: $(tail -1 "$MIGLOG")"
+  fi
+else
+  say "WARN  active env not found via facts.json; skipping embeddings provisioning"
+fi
 
 # root config lane too (config set only — never hand-edit)
 $HERMES config set compression.threshold "$THRESH_SAFEGUARD" >/dev/null 2>&1 \

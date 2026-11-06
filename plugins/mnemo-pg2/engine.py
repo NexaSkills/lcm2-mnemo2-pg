@@ -65,6 +65,45 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_VECDIM: dict[str, int] = {}
+
+
+def _col_dim(cx) -> int:
+    """Column dim of memory_embeddings.embedding for cx's schema
+    (pgvector stores it in atttypmod). Cached per schema; 0 = unknown
+    (guard inert)."""
+    key = getattr(cx, "schema", "") or ""
+    d = _VECDIM.get(key)
+    if d is None:
+        try:
+            r = cx.query_scalar(
+                "SELECT atttypmod FROM pg_attribute a"
+                " JOIN pg_class c ON c.oid = a.attrelid"
+                " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                " WHERE n.nspname = %s AND c.relname = 'memory_embeddings'"
+                " AND a.attname = 'embedding'", (key,))
+        except Exception:
+            r = None
+        d = int(r or 0)
+        _VECDIM[key] = d
+    return d
+
+
+def _veclit(cx, text: str, lane: str = "doc"):
+    """Dimension-guarded vector literal (S5): mismatch or provider error
+    yields None -> SQL NULL. Recall's coalesce() scores a NULL query/doc
+    vector as 0 — never a dim-mismatch ERROR across schemas."""
+    try:
+        vec = (_embed.embed_query(text) if lane == "query"
+               else _embed.embed_text(text))
+    except Exception:
+        return None
+    d = _col_dim(cx)
+    if d and len(vec) != d:
+        return None
+    return _embed.to_pg_vector(vec)
+
+
 def new_id(prefix="mem") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
@@ -99,8 +138,8 @@ class Engine:
         if not content or not content.strip():
             return {"ok": False, "error": "empty content"}
         mid = new_id()
-        vec = _embed.embed_text(content)
         with self._cx(bank) as cx:
+            vec = _veclit(cx, content)
             cx.execute(
                 "INSERT INTO working_memory(id,session_id,content,importance,"
                 "source,scope,valid_until,veracity,extract_entities,extract,"
@@ -111,8 +150,7 @@ class Engine:
             cx.execute(
                 "INSERT INTO memory_embeddings(memory_id,kind,embedding,model)"
                 " VALUES (%s,'working',%s::vector,%s)",
-                (mid, _embed.to_pg_vector(vec),
-                 os.environ.get("MNEMO2_EMBED_MODEL", "hashed256")))
+                (mid, vec, _embed.active_model()))
             fanout = []
             if extract_entities or extract:
                 # vendor entities.py fan-out target = triples (subject=
@@ -190,8 +228,7 @@ class Engine:
         fw = fts_weight if fts_weight is not None else DEFAULT_FTS_W
         iw = importance_weight if importance_weight is not None else DEFAULT_IMP_W
         hl = temporal_halflife or HALFLIFE_H
-        qvec = _embed.embed_text(query)
-        qvec_str = _embed.to_pg_vector(qvec)
+        qvec_str = None  # dim-guarded; set once connected (S5)
         now = _now()
         if query_time:
             try:
@@ -251,6 +288,7 @@ class Engine:
         results: list[dict] = []
         tiers = []
         with self._cx(bank) as cx:
+            qvec_str = _veclit(cx, query, lane="query")
             _toks = [t for t in "".join(
                 c if c.isalnum() else " " for c in query).split()
                 if len(t) >= 3 and not t.isdigit()]
@@ -360,8 +398,8 @@ class Engine:
                 cx.execute(
                     "INSERT INTO memory_embeddings(memory_id,kind,embedding,model)"
                     " VALUES (%s,'working',%s::vector,%s)",
-                    (memory_id, _embed.to_pg_vector(_embed.embed_text(content)),
-                     os.environ.get("MNEMO2_EMBED_MODEL", "hashed256")))
+                    (memory_id, _veclit(cx, content),
+                     _embed.active_model()))
         return {"ok": True, "id": memory_id, "re_embedded": content is not None}
 
     def forget(self, memory_id: str, bank: str = "private") -> dict:
@@ -583,7 +621,6 @@ class Engine:
         if not content or not content.strip():
             return {"ok": False, "error": "empty content"}
         mid = new_id("sf")
-        vec = _embed.embed_text(content)
         sh = self._surface_schema()
         with self._cx("surface") as cx:
             # fully-qualified: this write MUST land in the ONE shared
@@ -597,8 +634,8 @@ class Engine:
                  json.dumps({**(metadata or {}), "kind": kind})))
             cx.execute(
                 f'INSERT INTO "{sh}".memory_embeddings(memory_id,kind,'
-                "embedding) VALUES (%s,'working',%s::vector)",
-                (mid, _embed.to_pg_vector(vec)))
+                "embedding,model) VALUES (%s,'working',%s::vector,%s)",
+                (mid, _veclit(cx, content), _embed.active_model()))
         return {"ok": True, "id": mid, "bank": "surface", "kind": kind}
 
     def shared_recall(self, query, *, limit=5) -> dict:
@@ -657,7 +694,7 @@ class Engine:
     def _batch_apply(self, cx, action, op):
         if action == "remember":
             mid = new_id()
-            vec = _embed.embed_text(op.get("content", ""))
+            vec = _veclit(cx, op.get("content", ""))
             cx.execute(
                 "INSERT INTO working_memory(id,content,importance,source,"
                 "scope,valid_until) VALUES (%s,%s,%s,%s,%s,%s::date)",
@@ -665,9 +702,9 @@ class Engine:
                  op.get("source", "user"), op.get("scope", "session"),
                  op.get("valid_until")))
             cx.execute(
-                "INSERT INTO memory_embeddings(memory_id,kind,embedding)"
-                " VALUES (%s,'working',%s::vector)",
-                (mid, _embed.to_pg_vector(vec)))
+                "INSERT INTO memory_embeddings(memory_id,kind,embedding,"
+                "model) VALUES (%s,'working',%s::vector,%s)",
+                (mid, vec, _embed.active_model()))
             return {"ok": True, "id": mid}
         if action == "update":
             sets, params = [], []
@@ -710,7 +747,11 @@ class Engine:
             if not mem:
                 return {"ok": False, "error": "not found"}
             if action == "delete":
-                cx.execute("DELETE FROM working_memory WHERE id=%s", (memory_id,))
+                cx.execute("DELETE FROM working_memory WHERE id=%s",
+                           (memory_id,))
+                # S5 hygiene: deleting a memory must delete its vector
+                cx.execute("DELETE FROM memory_embeddings WHERE memory_id=%s",
+                           (memory_id,))
             elif action == "update" and new_content:
                 cx.execute("UPDATE working_memory SET content=%s WHERE id=%s",
                            (new_content, memory_id))
@@ -852,7 +893,7 @@ class Engine:
                         summary = None
                     summary = summary or digest
                     eid = new_id("ep")
-                    vec = _embed.embed_text(summary)
+                    vec = _veclit(cx, summary)
                     cx.execute(
                         "INSERT INTO episodic_memory(id,session_id,summary,"
                         "detail,source_memory_ids,importance) VALUES (%s,%s,"
@@ -862,8 +903,8 @@ class Engine:
                          max(g["importance"] for g in group)))
                     cx.execute(
                         "INSERT INTO memory_embeddings(memory_id,kind,"
-                        "embedding) VALUES (%s,'episodic',%s::vector)",
-                        (eid, _embed.to_pg_vector(vec)))
+                        "embedding,model) VALUES (%s,'episodic',%s::vector,%s)",
+                        (eid, vec, _embed.active_model()))
                     cx.execute(
                         "UPDATE working_memory SET tier='episodic',"
                         " consolidated_at=now() WHERE id = any(%s)",
@@ -904,10 +945,9 @@ class Engine:
                     if c is not None:
                         cx.execute(
                             "INSERT INTO memory_embeddings(memory_id,kind,"
-                            "embedding) VALUES (%s,'working',%s::vector) "
-                            "ON CONFLICT DO NOTHING",
-                            (mid, _embed.to_pg_vector(
-                                _embed.embed_text(c))))
+                            "embedding,model) VALUES (%s,'working',%s::vector,"
+                            "%s) ON CONFLICT DO NOTHING",
+                            (mid, _veclit(cx, c), _embed.active_model()))
                         repaired += 1
                 checks["repaired"] = repaired
         return {"ok": True, "checks": checks, "sqlite": False}
@@ -975,7 +1015,11 @@ class Engine:
                     skipped += 1
                     continue
                 if exists:
-                    cx.execute("DELETE FROM working_memory WHERE id=%s", (mid,))
+                    cx.execute("DELETE FROM working_memory WHERE id=%s",
+                               (mid,))
+                    cx.execute(
+                        "DELETE FROM memory_embeddings WHERE memory_id=%s",
+                        (mid,))
                 if dry_run:
                     written += 1
                     continue
@@ -987,11 +1031,13 @@ class Engine:
                      it.get("source", "imported"),
                      it.get("scope", "session")))
                 cx.execute(
-                    "INSERT INTO memory_embeddings(memory_id,kind,embedding)"
-                    " VALUES (%s,'working',%s::vector) ON CONFLICT (memory_id)"
-                    " DO UPDATE SET embedding=EXCLUDED.embedding",
-                    (mid, _embed.to_pg_vector(
-                        _embed.embed_text(it.get("content", "")))))
+                    "INSERT INTO memory_embeddings(memory_id,kind,embedding,"
+                    "model) VALUES (%s,'working',%s::vector,%s)"
+                    " ON CONFLICT (memory_id) DO UPDATE SET"
+                    " embedding=EXCLUDED.embedding,"
+                    " model=EXCLUDED.model",
+                    (mid, _veclit(cx, it.get("content", "")),
+                     _embed.active_model()))
                 written += 1
         return {"ok": True, "written": written, "skipped": skipped}
 

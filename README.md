@@ -39,7 +39,11 @@ Both are PG-native from the ground up: zero sqlite code, zero sqlite fallback pa
 | Consolidation at session end + turn-opportunistic auto-sleep (threshold 50 eligible rows) | `beam.sleep` / `_maybe_auto_sleep` | `MNEMO2_AUTO_CONSOLIDATE` (off in code; rollout pins `1`), `MNEMO2_AUTO_SLEEP` (on), `MNEMO2_AUTO_SLEEP_THRESHOLD` |
 | Cross-process reflection budget (single-flight; `meta` table claims; LLM calls serialize behind `mnemo2_llm_slot`) | `_reserve_reflection_budget` | always on |
 | LLM consolidation summaries via the configured proxy (concat fallback when unreachable) | reflection | `MNEMO2_LLM_URL` / `MNEMO2_LLM_MODEL` / `MNEMO2_LLM_KEY` |
+| Semantic embeddings: local fastembed ONNX (default `BAAI/bge-small-en-v1.5`, 384-dim), separate doc/query lanes with env prefixes, pgvector storage + HNSW cosine index; API mode; deterministic hashed fallback offline | `embeddings.py` (fastembed/API) | `MNEMO2_EMBED_MODEL` (`fastembed[:model]` / `hashed` / api), `MNEMO2_EMBED_CACHE`, `MNEMO2_EMBED_DOC_PREFIX` / `MNEMO2_EMBED_QUERY_PREFIX`. NEVER the main/active LLM (import-graph guarded) |
 
+`scripts/embed_migrate.sh [schema...]` performs the one-time embedding
+migration per host (dim ALTER with dependent-view drop/rebuild, batched
+re-embed from stored source text, model tagging, HNSW indexes; resumable).
 `scripts/consolidate_stale.sh` is a MANUAL on-demand hygiene pass (deliberately
 not installed as a timer anywhere; parity triggers are event-driven).
 Edge-parameter audit vs the vendor contract: `docs/parity-s4-findings.md`

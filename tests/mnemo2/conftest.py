@@ -23,6 +23,12 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PLUGIN_DIR = str(REPO / "plugins" / "mnemo-pg2")
+# Suite determinism (S5): hashed embeddings by default so ranking tests are
+# provider-independent; the S5 semantic tests opt into fastembed explicitly.
+# Dim pinned to 256 so sandbox schemas match hashed vectors (prod default
+# is 384 = the fastembed model).
+os.environ.setdefault("MNEMO2_EMBED_MODEL", "hashed")
+os.environ.setdefault("MNEMO2_EMBED_DIM", "256")
 sys.path.insert(0, PLUGIN_DIR)
 # N-3 (qa3): shared-process runs must not let lcm2's conftest path-pin
 # (it inserts ITS dir at sys.path[0]) answer our bare imports. Symmetric,
@@ -320,6 +326,21 @@ def _own_dir_first():
     _iso_sys.path[:] = _saved
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _module_env_baseline():
+    # register() mutates the ambient env (DSN/schema) and leaves it. A
+    # function-scoped snapshot alone restores ACROSS tests but its
+    # baseline already carries the previous module's registration
+    # mutations, so a later module can inherit a pointer to a dropped
+    # temp schema (s4 cascade class). Reset to the module's own starting
+    # env when the module finishes; the session pin re-applies after.
+    _snap = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(_snap)
+    os.environ["MNEMO2_SCHEMA"] = "mnemo2_suite"
+
+
 @pytest.fixture(autouse=True)
 def _env_restore():
     # Env-hygiene between tests: multi-agent tests (register_agent)
@@ -332,6 +353,37 @@ def _env_restore():
     yield
     os.environ.clear()
     os.environ.update(_snap)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _suite_sandbox():
+    # Ambient-binding isolation (S5, 2026-11-06): tests that call
+    # _dispatch directly ride the AMBIENT private schema — without this
+    # pin they silently hit the production bank of the runner's profile
+    # (p4a/s2 were passing on the real mike rows). Private lane only;
+    # the shared bank keeps its real schema (shared bootstrap expects it).
+    _saved = os.environ.get("MNEMO2_SCHEMA")
+    os.environ["MNEMO2_SCHEMA"] = "mnemo2_suite"
+    # create the sandbox + trigger the normal first-connect bootstrap
+    try:
+        import plugin_entry as _pe
+        import pgconn as _pgc
+        with _pgc.connect(None, ddl=False) as cx:
+            cx.execute('CREATE SCHEMA IF NOT EXISTS mnemo2_suite')
+        _pe._dispatch("mnemosyne_stats", {})
+    except Exception:
+        pass
+    yield
+    if _saved is None:
+        os.environ.pop("MNEMO2_SCHEMA", None)
+    else:
+        os.environ["MNEMO2_SCHEMA"] = _saved
+    try:
+        import pgconn
+        with pgconn.connect(None, ddl=False) as cx:
+            cx.execute('DROP SCHEMA IF EXISTS "mnemo2_suite" CASCADE')
+    except Exception:
+        pass
 
 
 # fix6 N-3 (DEFINITIVE cross-suite arbitration, sibling half): install the
