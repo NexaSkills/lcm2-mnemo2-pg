@@ -104,37 +104,31 @@ for kv in "MNEMO2_AUTO_CAPTURE=1" "MNEMO2_AUTO_CONSOLIDATE=1"; do
 done
 
 # ---------- 2c. embeddings provisioning (S5) ----------
-# fastembed in the facts.json ACTIVE env (model cache + dim ALTER +
-# re-embed + HNSW happen via scripts/embed_migrate.sh, resumable).
-ACTIVE_ENV=$(python3 - "$HOME/.hermes" <<'PY'
-import glob, json, os, sys
-hb = sys.argv[1]
-try:
-    f = glob.glob(os.path.join(hb, "installs", "*", "facts.json"))[0]
-    d = json.load(open(f))
-    print(d["packages"]["venv"]["environment"])
-except Exception:
-    print("")
-PY
-)
-if [ -n "$ACTIVE_ENV" ] && [ -x "$ACTIVE_ENV/bin/python" ]; then
-  if "$ACTIVE_ENV/bin/python" -c "import fastembed" 2>/dev/null; then
-    say "OK    active env imports fastembed"
+# Install fastembed into EVERY installed env we can find — the gateway's
+# committed env is per-checkout (pm.environments.committed_venv) and hosts
+# carry several installs; trusting one facts.json path bit us on beez
+# 2026-11-06 (it went into a stale-generation env). migrate stays resumable.
+FOUND_ENV=0
+for PYCAND in "$HOME"/.hermes/installs/*/environments/*/venv/bin/python; do
+  [ -x "$PYCAND" ] || continue
+  FOUND_ENV=1
+  if "$PYCAND" -c "import fastembed" 2>/dev/null; then
+    say "OK    fastembed present: ${PYCAND%/bin/python}"
   elif command -v uv >/dev/null; then
-    uv pip install fastembed --python "$ACTIVE_ENV/bin/python" >/dev/null 2>&1 \
-      && say "FIX   active env fastembed installed" \
-      || say "WARN  fastembed install failed (semantic recall falls back to hashed)"
+    uv pip install fastembed --python "$PYCAND" >/dev/null 2>&1 \
+      && say "FIX   fastembed installed: ${PYCAND%/bin/python}" \
+      || say "WARN  fastembed install failed: ${PYCAND%/bin/python}"
   else
-    say "WARN  no uv; install fastembed into $ACTIVE_ENV manually"
+    say "WARN  no uv; install fastembed into ${PYCAND%/bin/python} manually"
   fi
-  MIGLOG=/tmp/embed_migrate.$(date +%s).log
-  if PYTHON="$ACTIVE_ENV/bin/python" bash "$REPO_DIR/scripts/embed_migrate.sh" >"$MIGLOG" 2>&1; then
-    say "OK    embed_migrate ($(grep -c ': embedded' "$MIGLOG") schemas)"
-  else
-    say "WARN  embed_migrate failed: $(tail -1 "$MIGLOG")"
-  fi
+done
+[ "$FOUND_ENV" = 1 ] || say "WARN  no installed envs found; skipping fastembed"
+MIGLOG=/tmp/embed_migrate.$(date +%s).log
+ANY_PY=$(ls -t "$HOME"/.hermes/installs/*/environments/*/venv/bin/python 2>/dev/null | head -1)
+if [ -n "$ANY_PY" ] && PYTHON="$ANY_PY" bash "$REPO_DIR/scripts/embed_migrate.sh" >"$MIGLOG" 2>&1; then
+  say "OK    embed_migrate ($(grep -c ': embedded' "$MIGLOG") schemas)"
 else
-  say "WARN  active env not found via facts.json; skipping embeddings provisioning"
+  say "WARN  embed_migrate failed: $(tail -1 "$MIGLOG" 2>/dev/null)"
 fi
 
 # root config lane too (config set only — never hand-edit)
