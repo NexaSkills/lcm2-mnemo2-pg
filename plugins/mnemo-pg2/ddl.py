@@ -375,7 +375,26 @@ _SHARED_EXCLUDE = {
 # ONLY (string replace, never psycopg %s interpolation — these run inside
 # a DO $$ block where a stray '%' is a syntax error).
 _SHARED_VIEWS = [
-    "DO $$ BEGIN IF to_regclass('{SH}.working_memory') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_memory AS SELECT * FROM {SH}.working_memory; END IF; END $$",
+    # Canonical EXPLICIT column list (not SELECT *): ALTER-augmented
+    # schemas carry the reinforcement columns last while fresh CREATEs
+    # have them mid-list — with SELECT * the view column ORDER differs
+    # per schema and CREATE OR REPLACE VIEW then fails with
+    # "cannot change name of view column" (teardown error root cause,
+    # 2026-11-06). Identical literal list everywhere = idempotent
+    # replace everywhere, regardless of underlying table column order.
+    "DO $$ BEGIN IF to_regclass('{SH}.working_memory') IS NOT NULL THEN"
+    " BEGIN CREATE OR REPLACE VIEW {SELF}.shared_memory AS SELECT id,"
+    " session_id, channel_id, author_id, author_type, content, importance,"
+    " source, scope, veracity, tier, created_at, last_reinforced_at,"
+    " valid_until, superseded_by, expired_at, extract_entities, extract,"
+    " recall_count, last_recalled, consolidated_at, metadata, search FROM"
+    " {SH}.working_memory; EXCEPTION WHEN others THEN DROP VIEW IF EXISTS"
+    " {SELF}.shared_memory; CREATE VIEW {SELF}.shared_memory AS SELECT id,"
+    " session_id, channel_id, author_id, author_type, content, importance,"
+    " source, scope, veracity, tier, created_at, last_reinforced_at,"
+    " valid_until, superseded_by, expired_at, extract_entities, extract,"
+    " recall_count, last_recalled, consolidated_at, metadata, search FROM"
+    " {SH}.working_memory; END; END IF; END $$",
     "DO $$ BEGIN IF to_regclass('{SH}.memory_embeddings') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_embeddings AS SELECT * FROM {SH}.memory_embeddings; END IF; END $$",
     "DO $$ BEGIN IF to_regclass('{SH}.canonical_facts') IS NOT NULL THEN CREATE OR REPLACE VIEW {SELF}.shared_canonical AS SELECT * FROM {SH}.canonical_facts; END IF; END $$",
 ]
