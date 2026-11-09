@@ -67,12 +67,21 @@ def test_srvlog_run():
     pgconn.shutdown_pools()
     time.sleep(0.5)
     import glob
-    # cluster log dir: 'log' (hand-baked reference cluster) OR 'pg_log'
-    # (setup_instance.sh default landing) — fleet layout difference,
-    # 2026-11-09 host-suite hunt.
+    # THE authoritative log dir is the server's own log_directory (fleet:
+    # setup_instance.sh points it at <base>/pg/log, reference hand-bake at
+    # <data>/log — 2026-11-09 host-suite hunt). Ask, never guess; fall
+    # back to the candidate globs only if the question fails.
     cands = []
-    for d in ("log", "pg_log"):
-        cands += glob.glob(os.path.expanduser(f"~/lcm2-mnemo2-pg/pg/data/{d}/*.log"))
+    try:
+        with pgconn.connect(DSN, "public") as cx:
+            d = cx.query("show log_directory")[0][0]
+            cands += glob.glob(os.path.join(os.path.expanduser(d), "*.log"))
+    except Exception:
+        pass
+    if not cands:
+        for dd in ("../log", "log", "pg_log"):
+            cands += glob.glob(os.path.expanduser(
+                f"~/lcm2-mnemo2-pg/pg/data/{dd}/*.log"))
     log = sorted(cands, key=os.path.getmtime)[-1]
     txt = open(log, errors="replace").read()
     lines = [l for l in txt.splitlines()
