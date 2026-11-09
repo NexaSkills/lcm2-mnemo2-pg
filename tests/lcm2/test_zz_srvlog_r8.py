@@ -67,8 +67,13 @@ def test_srvlog_run():
     pgconn.shutdown_pools()
     time.sleep(0.5)
     import glob
-    log = sorted(glob.glob(os.path.expanduser("~/lcm2-mnemo2-pg/pg/data/log/*.log")),
-                 key=os.path.getmtime)[-1]
+    # cluster log dir: 'log' (hand-baked reference cluster) OR 'pg_log'
+    # (setup_instance.sh default landing) — fleet layout difference,
+    # 2026-11-09 host-suite hunt.
+    cands = []
+    for d in ("log", "pg_log"):
+        cands += glob.glob(os.path.expanduser(f"~/lcm2-mnemo2-pg/pg/data/{d}/*.log"))
+    log = sorted(cands, key=os.path.getmtime)[-1]
     txt = open(log, errors="replace").read()
     lines = [l for l in txt.splitlines()
              if RUN in l and ("conc_probe" in l or "search_path" in l)]

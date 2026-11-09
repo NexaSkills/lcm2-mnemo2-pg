@@ -11,6 +11,7 @@ Legs covered:
   4. capture-dir schema-ensure leg (fail-soft, name-validated).
 """
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -251,7 +252,9 @@ def test_ensure_schema_fail_soft(tmp_path, monkeypatch):
     bak = tmp_path / "sibling-bak"
     moved = False
     if sibling.is_dir():
-        sibling.rename(bak)
+        shutil.move(str(sibling), str(bak))  # cross-FS safe: repo and
+        # /tmp are separate mounts on the fleet hosts (single-FS on the
+        # reference box masked this — 2026-11-09 host-suite hunt)
         moved = True
     home = tmp_path / "fakehome"
     (home / ".hermes" / "plugins" / "lcm2-pg").mkdir(parents=True)
@@ -271,7 +274,7 @@ def test_ensure_schema_fail_soft(tmp_path, monkeypatch):
             sys.modules.pop("cap_f", None)
     finally:
         if moved and bak.is_dir() and not sibling.exists():
-            bak.rename(sibling)  # restore the repo layout exactly
+            shutil.move(str(bak), str(sibling))  # restore the repo layout exactly
 
 
 def test_ensure_schema_runs_the_leg(monkeypatch, tmp_path):
