@@ -45,8 +45,16 @@ _yamlget = _load("_yamlget")
 def fake_home(tmp_path, monkeypatch):
     """Point the live-home resolution at a throwaway profile dir by
     FORCING the hermes_constants route to fail (except-arm => HERMES_HOME
-    env), exactly the non-Hermes-interpreter behaviour pgconn uses too."""
+    env), exactly the non-Hermes-interpreter behaviour pgconn uses too.
+
+    SUITE-GREEN (2026-11-09): in full-dir runs an earlier test imports the
+    REAL hermes_cli, whose env_loader loads the host profile's .env into
+    os.environ — LCM_CONTEXT_THRESHOLD=0.75 on nexa — and _threshold()'s
+    env-first priority silently beat this fixture's config. A config-path
+    test MUST neutralize the env knob (env-override tests set it themselves
+    after this fixture)."""
     monkeypatch.setitem(sys.modules, "hermes_constants", None)  # import raises
+    monkeypatch.delenv("LCM_CONTEXT_THRESHOLD", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return tmp_path
 

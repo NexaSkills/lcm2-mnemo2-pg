@@ -39,6 +39,11 @@ BASE_DSN = f"dbname={DB} host={SOCKET} port={PORT} user=mnemo201"
 # (tests that specifically test DSN resolution reset this).
 os.environ["LCM2_PG_DSN"] = BASE_DSN
 os.environ["LCM2_DISABLE_MODEL"] = "1"
+# r4-style 30-param sweeps churn 30 fresh pools -> brief worker-thread
+# stalls can exceed the 15s checkout default on a loaded host (fixture
+# PoolTimeout flake, 2026-11-09 hunt; server-side ruled out by monitoring).
+# Bounded 45s: tolerates scheduling stalls, still fails on real deadlocks.
+os.environ.setdefault("LCM2_POOL_TIMEOUT", "45")
 
 
 @pytest.fixture(scope="session")

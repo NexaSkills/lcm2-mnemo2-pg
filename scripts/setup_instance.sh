@@ -53,7 +53,13 @@ log_truncate_on_rotation = on
 log_rotation_age = 1d
 log_rotation_size = 0
 shared_preload_libraries = ''
-max_connections = 40
+# max_connections deliberately NOT written here: the base template already
+# ships the PostgreSQL default 100, and an appended heredoc key SILENTLY
+# OVERRIDES it (last-one-wins) — that append once pinned 40 fleet-wide and
+# caused PoolTimeout/"too many clients" storms (2026-11-09 hunt: 105 leaked
+# test pools x min_size=1 hit the cap; FATAL "sorry, too many clients").
+# If a host must deviate, ALTER SYSTEM (postgresql.auto.conf outranks
+# postgresql.conf) — never re-add a heredoc line.
 EOF
   # trust over the private 0700 socket dir: matches existing lcm-pg cluster
   # practice (its pg_hba.conf is 'local all all trust'). peer auth fails under

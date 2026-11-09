@@ -167,6 +167,9 @@ def test_escaped_like_alone_would_miss_proof():
 FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
 # fake systemctl --user: records argv; state file drives is-enabled/active
 echo "$*" >> "$SC_LOG"
+# normalize: scripts correctly pass '--user' FIRST; match on the verb
+_norm=(); for _a in "$@"; do [ "$_a" = --user ] || _norm+=("$_a"); done
+set -- "${_norm[@]:-}"
 case "$1" in
   daemon-reload) exit 0 ;;
   enable)

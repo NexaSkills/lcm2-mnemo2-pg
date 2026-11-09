@@ -47,3 +47,34 @@ try:
     _neutralize_late_imports()
 except Exception:  # pragma: no cover
     pass
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _close_plugin_pools_after_test():
+    """SUITE-GREEN (2026-11-09 hunt): both pgconns cache one ConnectionPool
+    PER DISTINCT conninfo (min_size=1, open=True) for the life of the
+    process. Full-suite runs churn 100+ conninfo variants (port/db/host
+    probes) and by the r8 fan-out the server is at 'FATAL: sorry, too many
+    clients already' (pool-105/106 warnings, captured live). Production
+    opens a handful of pools; the churn is TEST-created state, so it dies
+    with the test. Generic scan (both plugin copies, no bare-key imports).
+    Tests that legitimately need a pool get a fresh lazy one next call."""
+    yield
+    for mod in list(sys.modules.values()):
+        try:
+            pools = getattr(mod, "_pools", None)
+            lock = getattr(mod, "_pools_lock", None)
+            if not isinstance(pools, dict) or lock is None:
+                continue
+            with lock:
+                for p in list(pools.values()):
+                    try:
+                        p.close()
+                    except Exception:
+                        pass
+                pools.clear()
+        except Exception:  # pragma: no cover - hygiene never breaks a run
+            pass

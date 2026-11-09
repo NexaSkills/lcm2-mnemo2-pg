@@ -73,8 +73,11 @@ def test_pass_when_present():
 
 def test_alive_binding_shortcuts():
     m = _load(SHIMS[0], "_x4dep_alive")
-    sys.modules.setdefault("psycopg", sys.modules.get("psycopg"))
-    saved = sys.modules.get("psycopg")
+    # ESTABLISH the precondition instead of hoping a sibling imported
+    # psycopg first: subset runs (sharded dirs, -k filters) can reach this
+    # test with nothing under the bare key while the interpreter clearly
+    # carries psycopg (import_module is the idempotent, order-proof form).
+    saved = __import__("importlib").import_module("psycopg")
     assert saved is not None, "suite interpreter must carry psycopg"
     m.require_psycopg()  # binding alive => return regardless of finders
     assert sys.modules.get("psycopg") is saved  # check mutates nothing

@@ -5,6 +5,7 @@ import atexit
 import os
 import re
 import sys
+import logging
 import threading
 
 # X-4 fail-close (must precede the psycopg imports): a missing psycopg
@@ -27,10 +28,38 @@ _x4_depcheck()
 
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolClosed
 
-_pools: dict[tuple, ConnectionPool] = {}
+_pools: dict[str, ConnectionPool] = {}  # keyed by conninfo str (was wrongly
+#                                        # annotated 'tuple' pre-2026-11-09)
+# Bounded pool cache (2026-11-09 suite-green hunt): full test runs create
+# 150+ distinct conninfos (per-test tmpdir instances). An unbounded cache
+# parks one min-size connection per pool for max_idle seconds and the
+# server slots die: 'FATAL: sorry, too many clients already' -> PoolTimeout
+# storms in r8/r4/h2 (full-dir-only, subsets green — that's the fingerprint).
+# Long-lived gateways benefit identically: dead instances never pile up.
+_MAX_POOLS = 8  # 8 pools x pool max_size 8 = 64 slots max: fits any cluster cap
 _pools_lock = threading.Lock()
+
+
+class _StopWarnQuiet(logging.Filter):
+    """close(timeout=0) on an EVICTED orphan logs 'couldn't stop thread'
+    although the threads exit on their own (they observe closed state).
+    Noise by design — drop ONLY that message (2026-11-09 hunt)."""
+
+    _stopwarn_quiet = True
+
+    def filter(self, record):
+        try:
+            return "couldn't stop thread" not in record.getMessage()
+        except Exception:
+            return True
+
+
+for _ln in ("psycopg_pool", "psycopg_pool.pool", "psycopg.pool"):
+    _lg = logging.getLogger(_ln)
+    if not any(getattr(f, "_stopwarn_quiet", False) for f in _lg.filters):
+        _lg.addFilter(_StopWarnQuiet())
 _ext_ready: set[str] = set()
 
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -132,16 +161,50 @@ def _ensure_ext_in_pg_catalog(conninfo: str) -> None:
 def _get_pool(conninfo: str) -> ConnectionPool:
     with _pools_lock:
         pool = _pools.get(conninfo)
+        if pool is not None:
+            # TRUE LRU touch (plain dict: pop+reinsert moves to the back;
+            # move_to_end is OrderedDict-only): a cache hit marks the pool
+            # living, so an engine in active use is never the eviction
+            # victim (2026-11-09 flake hunt).
+            _pools.pop(conninfo)
+            _pools[conninfo] = pool
         if pool is None:
             _ensure_ext_in_pg_catalog(conninfo)
             pool = ConnectionPool(
-                conninfo, min_size=1, max_size=8, open=True, timeout=15.0,
+                conninfo, min_size=0, max_size=8, open=True,
+                timeout=float(os.environ.get("LCM2_POOL_TIMEOUT", "15")),
+                # checkout wait; env-overridable so heavy param-sweep test
+                # suites (r4: 30 fresh pools, worker-thread churn) can
+                # tolerate reclaim stalls without hiding real deadlocks.
+                # (2026-11-09 suite-green hunt; product default stays 15.)
+                # min_size=0 (2026-11-09 suite-green hunt): with min_size=1
+                # EVERY distinct conninfo permanently RESERVED a slot the
+                # moment its pool was created. A test (or any process)
+                # touching 90+ probe variants blew the max_connections cap
+                # on pool FLOOR alone -> FATAL "too many clients" and
+                # 15s PoolTimeout storms (measured: 98/107 backends named
+                # lcm2-pg at peak). On-demand open + max_idle reclaim is
+                # the correct floor for many-pool, low-traffic conninfos.
                 max_idle=30.0,  # recycle idle conns: never hold a stale lock
                 kwargs={"row_factory": dict_row, "autocommit": True,
                         "prepare_threshold": None,  # no PREPARE: fork-safe (R8)
                         "application_name": "lcm2-pg"},
             )
             _pools[conninfo] = pool
+            while len(_pools) > _MAX_POOLS:  # LRU eviction (hit = move_to_end)
+                k_old = next(iter(_pools))
+                p_old = _pools.pop(k_old)
+                # CLOSE deterministically (timeout=0): a GC-time __del__
+                # would leave the dying pool's scheduler tasks queued on the
+                # SHARED scheduler thread — fresh pools' first AddConnection
+                # lines up behind ~150 delayed closes and starves 15s
+                # (pool-155 PoolTimeout storm, 2026-11-09 hunt). A Conn
+                # still holding this pool self-heals: PoolClosed -> rebuild
+                # in Conn.__enter__.
+                try:
+                    p_old.close(timeout=0)
+                except Exception:
+                    pass
         return pool
 
 
@@ -161,17 +224,26 @@ class Conn:
         self.ddl_log: list[str] = []
 
     def __enter__(self) -> "Conn":
-        try:
-            self._cm = self._pool.connection()
-            self._conn = self._cm.__enter__()
-        except Exception:
-            # checkout failed (server unreachable / pool timeout): the
-            # context manager never ran, so close the pool we just opened
-            # for this DSN. Without this a dead endpoint leaves its pool
-            # cached with an abandoned waiter and every later checkout in
-            # the process times out instead of raising a clean error.
-            self._evict_pool()
-            raise
+        for _attempt in (0, 1):
+            try:
+                self._cm = self._pool.connection()
+                self._conn = self._cm.__enter__()
+                break
+            except PoolClosed:
+                # LRU eviction closed our pool while we still held it
+                # (the eviction-side counterpart of the F-1 family).
+                # Rebuild a pool for the same conninfo and retry once.
+                if _attempt:
+                    raise
+                self._pool = _get_pool(self._pool.conninfo)
+            except Exception:
+                # checkout failed (server unreachable / pool timeout): the
+                # context manager never ran, so close the pool we just opened
+                # for this DSN. Without this a dead endpoint leaves its pool
+                # cached with an abandoned waiter and every later checkout in
+                # the process times out instead of raising a clean error.
+                self._evict_pool()
+                raise
         # session-level (is_local=false) pin: re-applied automatically on
         # every pool reconnect/reset; a transaction-local set_config is lost
         # silently when the pool ends the implicit transaction at checkin.

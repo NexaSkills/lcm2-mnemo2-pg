@@ -23,6 +23,7 @@ import atexit
 import os
 import re
 import sys
+import logging
 import threading
 
 # X-4 fail-close (must precede the psycopg imports): a missing psycopg
@@ -45,12 +46,34 @@ _x4_depcheck()
 
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolClosed
 
 _ENVBIND_CELL_KEY = "_mnemo2_envbind_registry_ours"
 
-_pools: dict[tuple, ConnectionPool] = {}
+_pools: dict[str, ConnectionPool] = {}  # keyed by conninfo str (annotation
+#                                        # fixed 2026-11-09)
+_MAX_POOLS = 8  # 8 pools x pool max_size 8 = 64 slots max: fits any cluster cap
 _pools_lock = threading.Lock()
+
+
+class _StopWarnQuiet(logging.Filter):
+    """close(timeout=0) on an EVICTED orphan logs 'couldn't stop thread'
+    although the threads exit on their own (they observe closed state).
+    Noise by design — drop ONLY that message (mirror of lcm2-pg pgconn)."""
+
+    _stopwarn_quiet = True
+
+    def filter(self, record):
+        try:
+            return "couldn't stop thread" not in record.getMessage()
+        except Exception:
+            return True
+
+
+for _ln in ("psycopg_pool", "psycopg_pool.pool", "psycopg.pool"):
+    _lg = logging.getLogger(_ln)
+    if not any(getattr(f, "_stopwarn_quiet", False) for f in _lg.filters):
+        _lg.addFilter(_StopWarnQuiet())
 _ext_ready: set[str] = set()
 
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -285,14 +308,29 @@ def _ensure_ext_in_pg_catalog(conninfo: str) -> None:
 def _get_pool(conninfo: str) -> ConnectionPool:
     with _pools_lock:
         pool = _pools.get(conninfo)
+        if pool is not None:
+            # TRUE LRU touch (pop+reinsert = move to back): an engine in
+            # active use is never the eviction victim (2026-11-09 hunt).
+            _pools.pop(conninfo)
+            _pools[conninfo] = pool
         if pool is None:
             _ensure_ext_in_pg_catalog(conninfo)
             pool = ConnectionPool(
-                conninfo, min_size=1, max_size=8, open=True,
+                conninfo, min_size=0, max_size=8, open=True,
+                # min_size=0: see lcm2-pg/pgconn.py — pool floor must not
+                # reserve slots (2026-11-09 too-many-clients storm cure).
                 timeout=10, max_idle=300,
                 kwargs={"row_factory": dict_row, "autocommit": False},
             )
             _pools[conninfo] = pool
+            while len(_pools) > _MAX_POOLS:  # LRU eviction (hit = touch)
+                k_old = next(iter(_pools))   # CLOSE deterministically —
+                p_old = _pools.pop(k_old)    # GC __del__ queues dying
+                try:                         # pools' tasks on the shared
+                    p_old.close(timeout=0)   # scheduler and starves fresh
+                except Exception:            # pools 15s (pool-155 storm;
+                    pass                     # held Conns self-heal via
+                                             # PoolClosed retry)
             # fix7 order item 2 (wire-or-delete): pubsweep is LIVE. Every
             # new pool to a db first sweeps that db's public schema of
             # dangling root-views/residue (self-guarded, advisory-locked,
@@ -330,7 +368,17 @@ class Conn:
         self._public_busy = False
 
     def __enter__(self) -> "Conn":
-        self._cx = self._pool.getconn()
+        for _attempt in (0, 1):
+            try:
+                self._cx = self._pool.getconn()
+                break
+            except PoolClosed:
+                # LRU eviction closed our pool while we still held it;
+                # rebuild for the same dsn and retry once (mirror of the
+                # lcm2-pg Conn self-heal, 2026-11-09).
+                if _attempt:
+                    raise
+                self._pool = _get_pool(self.dsn)
         # DDL CRITICAL (P3X root cause): getconn() hands back a POOLED
         # connection with whatever session state the previous borrower
         # left. The runtime RESET/SETs are COMMITTED (idle-in-transaction

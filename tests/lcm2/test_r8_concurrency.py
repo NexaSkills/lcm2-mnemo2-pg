@@ -20,7 +20,18 @@ import multiprocessing.context
 import os
 import uuid
 
-import pgconn
+import importlib.util as _ilu
+
+# ANCHORED import (2026-11-09 suite-green hunt): mp "spawn" children
+# re-import this module under whatever sys.path the full-suite parent
+# accumulated — a bare `import pgconn` could then bind the mnemo-pg2
+# sibling and its pools time out against lcm2db (r8 full-dir PoolTimeout;
+# green standalone). Anchor to OUR plugin file by path, parent & children.
+_PGC = os.path.join(os.path.dirname(os.path.dirname(
+         os.path.dirname(os.path.abspath(__file__)))), "plugins", "lcm2-pg", "pgconn.py")
+_spec = _ilu.spec_from_file_location("lcm2_r8_pgconn", _PGC)
+pgconn = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(pgconn)
 
 SOCKET = os.environ.get("LCM2_PG_HOST",
                         os.path.expanduser("~/lcm2-mnemo2-pg/pg/run"))
@@ -74,6 +85,12 @@ def _worker(args):
 
 def test_parallel_writes_and_integrity():
     _setup()
+    # Spawn hygiene (2026-11-09 flake hunt): the parent's own cached pool
+    # conns and worker threads are USELESS during the fan-out and were
+    # implicated in full-dir PoolTimeouts (children starve while parent
+    # holds slots/threads). Children already shutdown_pools() themselves;
+    # do the same parent-side before spawning.
+    pgconn.shutdown_pools()
     jobs = [(s, w, ROWS, RUN) for s in SCHEMAS for w in range(WORKERS)]
     with mp.get_context("spawn").Pool(8) as pool:
         results = pool.map(_worker, jobs)

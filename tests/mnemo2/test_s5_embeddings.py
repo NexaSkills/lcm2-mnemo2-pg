@@ -66,14 +66,18 @@ def test_paraphrase_semantic_pair(fastembed_on):
     assert lex < 0.45, f"hashed unexpectedly caught the paraphrase: {lex:.2f}"
 
 
+import pgconn  # module-level: dir hook (_src_window) keeps THIS binding ours;
+               # function-local `import pgconn` would follow the bare key, which
+               # an lcm2-flavored sibling import may have claimed first (2026-11-09
+               # s5 reds in full-dir runs: 'Conn' object has no attribute 'schema')
+
+
 def _priv_schema():
-    import pgconn
     with pgconn.connect(None) as cx:
         return cx.schema
 
 
 def test_write_lane_model_tag_and_dims():
-    import pgconn
     tag = call("mnemosyne_remember",
                content="S5TAG the alpine swift nests above the ninth ridge",
                importance=0.9)
@@ -96,7 +100,6 @@ def test_write_lane_model_tag_and_dims():
 def test_dim_guard_fail_soft(monkeypatch):
     """A provider whose dim disagrees with the column yields a NULL
     vector, never an error and never a corrupt row."""
-    import pgconn
     monkeypatch.setattr(_embed_mod, "embed_text", lambda *a, **k: [0.1] * 999)
     monkeypatch.setattr(_embed_mod, "embed_query",
                         lambda *a, **k: [0.1] * 999)
