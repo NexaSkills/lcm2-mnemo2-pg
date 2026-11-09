@@ -347,6 +347,27 @@ class Conn:
             self._cx.execute("SET search_path TO pg_catalog,pg_temp")
         self._schema_on_conn = self.schema
         self._conn_env_shared = _envget("MNEMO2_SHARED_SCHEMA")
+        # SELFHEAL-SCHEMA (lesson mybuddy-clone, 2026-11-09): mirror of
+        # the lcm2-pg pgconn cure — author mnemo2_<agent> at the Conn
+        # layer so NO lane depends on the setup scripts having run
+        # (fresh profile / never-onboarded surface died on 3F000 inside
+        # the first provider dispatch). Cache-free: a mid-life schema
+        # DROP is repaired by the next checkout in the SAME process.
+        # Identifier-safe: schema name validated in __init__. Races and
+        # dead-catalog errors are swallowed here by design — the
+        # winner's schema is present, and any real problem still raises
+        # from the caller's own bootstrap DDL. 'public' is exempt.
+        if self.schema != "public":
+            try:
+                self._cx.execute('CREATE SCHEMA IF NOT EXISTS "%s"'
+                                 % self.schema)
+                if not self._cx.autocommit:
+                    self._cx.commit()
+            except Exception:
+                try:
+                    self._cx.rollback()
+                except Exception:
+                    pass
         # OUR schema is bound session-locally ONLY (never SET ... LOCAL):
         # it is RESET in __exit__ before the connection returns to the
         # pool, so a shared-surface call can never read or write through

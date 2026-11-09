@@ -194,6 +194,30 @@ class Conn:
                 "lcm2-pg: refusing ddl bootstrap while schema public holds "
                 "relations (unqualified CREATE TABLE IF NOT EXISTS would "
                 "land there). Run scripts/sweep_public_residue.py.")
+        # SELFHEAL-SCHEMA (lesson mybuddy-clone, 2026-11-09): a schema
+        # only the setup scripts know how to author is a bug, not a
+        # design. Fresh agent profiles / a never-onboarded root surface
+        # booted straight into 3F000 "no schema has been selected to
+        # create in" (unqualified bootstrap CREATE TABLEs under
+        # search_path=<missing schema>), the LCM2Engine constructor died,
+        # and the host silently fell back to the built-in compressor.
+        # Author the schema HERE, at the Conn layer: every lane (engine
+        # bootstrap, hook capture, tools) self-heals on first contact.
+        # CACHE-FREE BY DESIGN: a mid-life operator DROP is repaired by
+        # the very next checkout in the same process (a memo would leak
+        # a stale "it exists" past the teardown that removed it). Name
+        # validated in __init__ (_SCHEMA_RE), so identifier
+        # interpolation is safe. Swallowed errors are sound: a concurrent
+        # creator that WON leaves the schema present (IF NOT EXISTS races
+        # raise duplicate/undefined in the loser); a genuinely dead
+        # catalog still surfaces, loudly, through the caller's own DDL.
+        # 'public' is exempt — always present, never ours to manage.
+        if self._schema != "public":
+            try:
+                self._conn.execute(
+                    'CREATE SCHEMA IF NOT EXISTS "%s"' % self._schema)
+            except Exception:
+                pass
         self._conn.execute(
             "select set_config('search_path', %s, false)", (self._schema,))
         return self
