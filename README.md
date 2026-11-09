@@ -107,6 +107,10 @@ tests-before-code, verification-before-assertion.
 6. Migrate: `scripts/migrate_legacy_lcm_to_lcm2.sh` (legacy old->new data,
    idempotent; schema creation itself is automatic — engine bootstrap runs
    `CREATE SCHEMA IF NOT EXISTS`, `setup_dbs.sh` the bank + `shared`).
+7. Prove losslessness with the canary test: `docs/canary-lossless-test.md`
+   (operator-driven prompt protocol — anchors planted in a real session,
+   then recovered verbatim from the store after the first fold. A
+   rollout is not "proven lossless" until this passes on the host).
 
 Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.
 
