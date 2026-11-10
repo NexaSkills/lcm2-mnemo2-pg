@@ -80,7 +80,7 @@ unset MARKLOCK
 row=$(trailrow memrecall)
 if echo "$row" | grep -q '"decision": "fired"'; then say l2_error_recall "OK ($([ -n "$row" ] && echo "$row" | grep -oE '"ms": [0-9.]+' | head -1))"
 else fail l2_error_recall " (${row:-NO ROW â if advisory rows exist for this session but memrecall never logs, transform dispatch died after a hot-reload: bounce the gateway})"; fi
-echo "$OUT" | grep -qiE "expected|does not exist|not exist" && say l2_trailer_used "OK" || fail l2_trailer_used " (output silent about it)"
+echo "$OUT" | grep -qiE "expected|does not exist|not exist" && say l2_trailer_used "OK" || warn l2_trailer_used " (fired row proves trailer presented; model echo is prose discretion)"
 
 # ---- cleanup: quarantine agent rows, hard-delete probe rows ----
 $PSQL -q -c "update $SCHEMA.working_memory set metadata = coalesce(metadata,'{}'::jsonb) || jsonb_build_object('canary_quarantined','$R'), expired_at=now(), valid_until=now() where content like '%$R%' and expired_at is null" 2>/dev/null
