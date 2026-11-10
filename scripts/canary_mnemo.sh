@@ -73,7 +73,7 @@ echo "$OUT" | grep -q "$A2" && say auto_recall_shared "OK" || warn auto_recall_s
 #    the SECOND must trigger the lane's automatic recall of that experience.
 MARKLOCK=1; mark
 for n in 1 2 3; do
-  turn "run the command $BAD once with the terminal tool and quote its raw output"
+  turn "use the terminal tool to run the command $BAD once and quote its raw output"
   ROW=$(trailrow memrecall); [ -n "$ROW" ] && break
 done
 unset MARKLOCK
