@@ -29,7 +29,7 @@ say(){ printf '  %-26s %s\n' "$1" "$2"; }
 fail(){ say "$1" "FAIL$2"; fails=$((fails+1)); }
 warn(){ say "$1" "WARN$2"; }
 turn(){ # turn <prompt> -> sets OUT, SID
-  mark; OUT=$(timeout 200 env -u HERMES_HOME "${HC[@]}" --pass-session-id -z "$1" 2>/dev/null)
+  { [ -z "$MARKLOCK" ] && mark; }; OUT=$(timeout 200 env -u HERMES_HOME "${HC[@]}" --pass-session-id -z "$1" 2>/dev/null)
   SID=$(echo "$OUT" | grep -oE '[0-9a-f]{24,36}' | tail -1)
   echo "===== SID=$SID PROMPT=$1" >> "$LOG"; echo "$OUT" >> "$LOG"
 }
@@ -52,7 +52,7 @@ P1=$($PSQL -At -c "select count(*) from $SCHEMA.working_memory where content lik
 [ "${P1:-0}" -ge 1 ] && say l1_db_private "OK ($P1 row)" || fail l1_db_private " (rows=${P1:-?})"
 
 # 2. L3 automatic bank routing: fleet doctrine phrasing -> shared bank.
-turn "policy for everyone on every host: the drill keyword is $A2"
+turn "policy for everyone on every host from now on: the drill keyword is $A2"
 row=$(trailrow memlearn)
 P2=$($PSQL -At -c "select count(*) from shared.working_memory where content like '%$A2%'" 2>/dev/null)
 if [ "${P2:-0}" -ge 1 ]; then say l3_shared_bank "OK ($P2 row)"
@@ -71,8 +71,10 @@ echo "$OUT" | grep -q "$A2" && say auto_recall_shared "OK" || warn auto_recall_s
 # 5. L2 automatic error-recall: hit a hard error twice in two fresh
 #    sessions; the FIRST failure is remembered automatically (turn ingest),
 #    the SECOND must trigger the lane's automatic recall of that experience.
+MARKLOCK=1; mark
 turn "use the terminal tool to run the command $BAD once and quote its output"
 turn "use the terminal tool to run the command $BAD once and quote its output"
+unset MARKLOCK
 row=$(trailrow memrecall)
 if echo "$row" | grep -q '"decision": "fired"'; then say l2_error_recall "OK ($([ -n "$row" ] && echo "$row" | grep -oE '"ms": [0-9.]+' | head -1))"
 else fail l2_error_recall " (${row:-NO ROW â if advisory rows exist for this session but memrecall never logs, transform dispatch died after a hot-reload: bounce the gateway})"; fi
