@@ -73,7 +73,7 @@ echo "$OUT" | grep -q "$A2" && say auto_recall_shared "OK" || warn auto_recall_s
 #    the SECOND must trigger the lane's automatic recall of that experience.
 MARKLOCK=1; mark
 for n in 1 2 3; do
-  turn "use the terminal tool to run the command $BAD once in the FOREGROUND (no backgrounding, no sleep) and quote its raw output"
+  turn "call the TERMINAL tool right now with command exactly: $BAD. Do NOT use the process tool, do not background, do not add sleep. Quote the raw output."
   ROW=$(trailrow memrecall); [ -n "$ROW" ] && break
 done
 unset MARKLOCK
