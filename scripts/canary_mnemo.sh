@@ -29,7 +29,7 @@ say(){ printf '  %-26s %s\n' "$1" "$2"; }
 fail(){ say "$1" "FAIL$2"; fails=$((fails+1)); }
 warn(){ say "$1" "WARN$2"; }
 turn(){ # turn <prompt> -> sets OUT, SID
-  { [ -z "$MARKLOCK" ] && mark; }; OUT=$(timeout 200 env -u HERMES_HOME "${HC[@]}" --pass-session-id -z "$1" 2>/dev/null)
+  { [ -z "${MARKLOCK:-}" ] && mark; }; OUT=$(timeout 200 env -u HERMES_HOME "${HC[@]}" --pass-session-id -z "$1" 2>/dev/null)
   SID=$(echo "$OUT" | grep -oE '[0-9a-f]{24,36}' | tail -1)
   echo "===== SID=$SID PROMPT=$1" >> "$LOG"; echo "$OUT" >> "$LOG"
 }
