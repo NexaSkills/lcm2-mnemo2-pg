@@ -92,6 +92,13 @@ $PSQL -q -c "update $SCHEMA.working_memory set metadata = coalesce(metadata,'{}'
 $PSQL -q -c "delete from shared.memory_embeddings where memory_id in (select id from shared.working_memory where content like '%$R%')" 2>/dev/null
 $PSQL -q -c "delete from shared.working_memory where content like '%$R%'" 2>/dev/null
 LEFT=$($PSQL -At -c "select (select count(*) from shared.working_memory where content like '%$R%') + (select count(*) from $SCHEMA.working_memory where content like '%$R%' and (metadata->>'canary_quarantined') is null)" 2>/dev/null)
+if [ "${LEFT:-1}" != "0" ]; then   # late async persist race: re-sweep once
+  sleep 12
+  $PSQL -q -c "update $SCHEMA.working_memory set metadata = coalesce(metadata,'{}'::jsonb) || jsonb_build_object('canary_quarantined','$R'), expired_at=now(), valid_until=now() where content like '%$R%' and expired_at is null" 2>/dev/null
+  $PSQL -q -c "delete from shared.memory_embeddings where memory_id in (select id from shared.working_memory where content like '%$R%')" 2>/dev/null
+  $PSQL -q -c "delete from shared.working_memory where content like '%$R%'" 2>/dev/null
+  LEFT=$($PSQL -At -c "select (select count(*) from shared.working_memory where content like '%$R%') + (select count(*) from $SCHEMA.working_memory where content like '%$R%' and (metadata->>'canary_quarantined') is null)" 2>/dev/null)
+fi
 [ "${LEFT:-1}" = "0" ] && say cleanup "OK (own rows purged; agent saves quarantined+expired, shared fully deleted)" || fail cleanup " (left=$LEFT)"
 
 echo
