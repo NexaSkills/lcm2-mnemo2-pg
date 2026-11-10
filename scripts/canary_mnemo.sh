@@ -22,7 +22,7 @@ TRAIL_DEFAULT="$HOME/.hermes/plugins-data/nexa-kev/decisions.jsonl"
 TRAIL="${NK_TRAIL:-$TRAIL_DEFAULT}"
 R=$(openssl rand -hex 3)
 A1="kaleidoscope-$R"; A2="farthingdale-$R"   # A1 private rule, A2 fleet doctrine
-BAD="zk-$R-probe"                              # fake binary for the L2 error scene
+BAD="drill-dr-$R"                              # fake binary for the L2 error scene
 LOG=/tmp/canary-mnemo-$R.log
 fails=0
 say(){ printf '  %-26s %s\n' "$1" "$2"; }
@@ -72,8 +72,10 @@ echo "$OUT" | grep -q "$A2" && say auto_recall_shared "OK" || warn auto_recall_s
 #    sessions; the FIRST failure is remembered automatically (turn ingest),
 #    the SECOND must trigger the lane's automatic recall of that experience.
 MARKLOCK=1; mark
-turn "use the terminal tool to run the command $BAD once and quote its output"
-turn "use the terminal tool to run the command $BAD once and quote its output"
+for n in 1 2 3; do
+  turn "run the command $BAD once with the terminal tool and quote its raw output"
+  ROW=$(trailrow memrecall); [ -n "$ROW" ] && break
+done
 unset MARKLOCK
 row=$(trailrow memrecall)
 if echo "$row" | grep -q '"decision": "fired"'; then say l2_error_recall "OK ($([ -n "$row" ] && echo "$row" | grep -oE '"ms": [0-9.]+' | head -1))"
