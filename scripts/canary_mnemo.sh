@@ -23,6 +23,7 @@ TRAIL="${NK_TRAIL:-$TRAIL_DEFAULT}"
 R=$(openssl rand -hex 3)
 A1="kaleidoscope-$R"; A2="farthingdale-$R"   # A1 private rule, A2 fleet doctrine
 BAD="drill-dr-$R"                              # fake binary for the L2 error scene
+T0=$(date +%s)   # absolute floor: script start
 LOG=/tmp/canary-mnemo-$R.log
 fails=0
 say(){ printf '  %-26s %s\n' "$1" "$2"; }
@@ -34,10 +35,14 @@ turn(){ # turn <prompt> -> sets OUT, SID
   echo "===== SID=$SID PROMPT=$1" >> "$LOG"; echo "$OUT" >> "$LOG"
 }
 mark(){ T0=$(date +%s 2>/dev/null); }   # trail window start (before turn)
-trailrow(){ # trailrow <kind> -> newest row of kind written since mark()
+trailrow(){ # trailrow <kind> -> newest-by-ts row of kind written since mark()
   [ -f "$TRAIL" ] || return 0
-  grep -h "\"kind\": \"$1\"" "$TRAIL" 2>/dev/null \
-    | sed -E 's/.*"ts": ([0-9]+).*/\1|&/' | awk -F'|' -v s="$T0" '$1+0>s+0 {print substr($0,index($0,"{"))}' | tail -1
+  local line ts bt=0 best=""
+  while IFS= read -r line; do
+    ts=$(printf '%s' "$line" | grep -oE '"ts": [0-9]+' | grep -oE '[0-9]+' | head -1)
+    [ -n "$ts" ] && [ "$ts" -gt "${T0:-0}" ] && [ "$ts" -gt "$bt" ] && { bt=$ts; best=$line; }
+  done < <(grep -h "\"kind\": \"$1\"" "$TRAIL" 2>/dev/null)
+  printf '%s' "$best"
 }
 
 echo "== mnemo/kev self-learning canary (agent=$AGENT anchors=$R)"
