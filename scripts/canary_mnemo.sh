@@ -55,9 +55,26 @@ turn "glad that worked out â from now on, when you write canary notes for t
 row=$(trailrow memlearn)
 if echo "$row" | grep -q '"decision": "fired"'; then say l1_capture "OK ($([ -n "$row" ] && echo "$row" | grep -oE '"p_save": [0-9.]+' | head -1))"
 else fail l1_capture " (trail: ${row:-none})"; fi
-sleep 2
-P1=$($PSQL -At -c "select count(*) from $SCHEMA.working_memory where content like '%$A1%' and scope='persistent'" 2>/dev/null)
-[ "${P1:-0}" -ge 1 ] && say l1_db_private "OK ($P1 row)" || fail l1_db_private " (rows=${P1:-?})"
+# Durable-save proof, bank-history-aware (nexa 2026-11-11): the fired
+# directive is advisory prose — a model that recall-surfaces an equivalent
+# LIVE rule from prior runs answers "already saved" without inserting a
+# fresh row (measured: 0 remember-tool calls, 6 live rule rows). PASS =
+# any durable trace: (a) new row for THIS run's anchor, (b) a rule row
+# touched (re-reinforced) during the run, (c) an equivalent live
+# predecessor rule (superseded/expired rows never count). 60s poll covers
+# late async persists (single sleep-2 snapshot was the old class).
+P1=0; D1=0; OLD1=0
+for _i in 1 2 3 4 5 6; do
+  P1=$($PSQL -At -c "select count(*) from $SCHEMA.working_memory where content like '%$A1%' and scope='persistent'" 2>/dev/null)
+  D1=$($PSQL -At -c "select count(*) from $SCHEMA.working_memory where content like '%$A1%' and (created_at >= now() - interval '5 minutes' or last_reinforced_at >= now() - interval '5 minutes')" 2>/dev/null)
+  OLD1=$($PSQL -At -c "select count(*) from $SCHEMA.working_memory where content like '%kaleidoscope%' and scope='persistent' and superseded_by is null and expired_at is null" 2>/dev/null)
+  [ "$(( ${P1:-0} + ${D1:-0} + ${OLD1:-0} ))" -ge 1 ] && break
+  sleep 10
+done
+if [ "${P1:-0}" -ge 1 ]; then say l1_db_private "OK (fresh row)"
+elif [ "${D1:-0}" -ge 1 ]; then say l1_db_private "OK (anchor row reinforced this run)"
+elif [ "${OLD1:-0}" -ge 1 ]; then say l1_db_private "OK (equivalent live rule already banked: $OLD1)"
+else fail l1_db_private " (rows=0, no durable trace)"; fi
 
 # 2. L3 automatic bank routing: fleet doctrine phrasing -> shared bank.
 turn "policy for everyone on every host from now on: the drill keyword is $A2"

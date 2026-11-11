@@ -165,11 +165,43 @@ Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.
 - **Self-contained hosts keep everything under ~/.hermes.** With
   `LCM2_SELF_CONTAINED=1` in the root `.env` (or one-off
   `update_mnemo_host.sh --relocate`), the relocation leg moves the checkout
-  to `~/.hermes/checkout/lcm2-mnemo2-pg` (the DB instance under
-  `~/lcm2-mnemo2-pg/pg` lives OUTSIDE the checkout and is untouched).
-  Fail-closed everywhere: foreign hub entries, existing relocation
-  targets, and real-dir hub entries the script doesn't own are FAILs,
-  never silent overwrites. `check_mnemo.sh` (lane 8) reports the verdict.
+  to `~/.hermes/checkout/lcm2-mnemo2-pg`. If a legacy layout had stowed the
+  DB INSTANCE inside the checkout (`<checkout>/pg`), `plugin_hub.sh`
+  unstows it FIRST — graceful stop via the instance's own `pg_ctl`, target
+  = the unit's `-D` dir (env `PLUGIN_HUB_PG_CANON` overrides) — then moves
+  the repo alone; a live instance is never dragged into the checkout
+  placement. Fail-closed everywhere: foreign hub entries, existing
+  relocation targets, and real-dir hub entries the script doesn't own are
+  FAILs, never silent overwrites. `check_mnemo.sh` (lane 8) reports the
+  verdict.
+- **Scripts are executed, never interpreted-by-guess.** Every `scripts/*.py`
+  carries a python shebang and the exec bit: run it directly or via
+  `~/.hermes/tools/python-*/bin/python3 <script>` — never `bash <script>.py`
+  (bash parses it, prints a syntax error, and the intended action silently
+  never happens; observed 2026-11-11 bouncing via `bounce_gateway.py`).
+  Bounce discipline stays: scripts MAY bounce via
+  `scripts/bounce_gateway.py` (sd_bus legs + runtime-assembled
+  `systemctl kill`, verb-safe); operators bounce with
+  `systemctl --user restart hermes-gateway.service` from an external shell.
+
+## Requirements — bank routing (session memory, nexa incident 2026-11-11)
+
+- **The private bank follows the LIVE profile, deterministically:**
+  `mnemo2_<profile>` derived from the Hermes home the process resolves
+  (host contextvar funnel > `HERMES_HOME` > `~/.hermes`; `MNEMO2_SCHEMA`
+  pins win). A `hermes` CLI child with no `-p` INHERITS `HERMES_HOME` from
+  its spawning shell — spawn one from a profile-scoped agent and its rows
+  land in THAT profile's bank, not default's. This is by design; the
+  guard is observability + convention:
+  - every process logs once:
+    `INFO mnemo-pg2: private bank=mnemo2_<x> (home=<path> via <source>)`
+    — the `home=` field is the routing tell (source reads `host-funnel`
+    whenever hermes_constants answered, even when the funnel was fed by
+    an inherited HERMES_HOME);
+  - scripts that probe a bank ALWAYS pass `-p <profile>` explicitly
+    (`canary_mnemo.sh` does — never bare `hermes`);
+  - `agent_schema()` keeps the W3TKT2 named warning for served-profile
+    fall-through (ghost profile dir -> `mnemo2_default`).
 
 ## Requirements — postgres binaries
 
