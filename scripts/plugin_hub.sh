@@ -59,9 +59,12 @@ fail(){ say "FAIL  $*"; fails=$((fails+1)); }
 # path — dangling-at-~/ops is the relocation artifact, dangling-at-a-vendor
 # dir stays a fail-closed vendor co-existence signal.
 link_accept(){
-  local link=$1 want=$2 raw res p
+  local link=$1 want=$2 extra=${3:-} raw res p
   raw=$(readlink "$link"); res=$(readlink -f "$link")
   [ "$res" = "$want" ] && return 0
+  # a link resolving into the source checkout is takeover-legal (the old
+  # pre-standard shape: profiles linked straight to the repo) — repoint it
+  [ -n "$extra" ] && [ "$res" = "$extra" ] && return 0
   if [ -n "$raw" ] && [ ! -e "$res" ]; then
     # dangling-at-a-repo-path = takeover-legal (moved checkout OR a hub entry
     # this run just retired); dangling anywhere else = vendor, refuse
@@ -153,8 +156,8 @@ for pdir in "$HERMES_BASE"/profiles/*/; do
     [ -d "$pd" ] || { ok "profile $pname: no plugins dir (nothing to link)"; continue; }
     for n in $NAMES; do
       [ -e "$pd/$n" ] || continue
-      if link_accept "$pd/$n" "$(readlink -f "$HUB/$n" 2>/dev/null)" \
-         && { [ "$(readlink "$pd/$n")" = "$HUB/$n" ] || link_accept "$pd/$n" "$(readlink -f "$HUB/$n" 2>/dev/null)"; }; then
+      if link_accept "$pd/$n" "$(readlink -f "$HUB/$n" 2>/dev/null)" "$REPO/plugins/$n" \
+         && { [ "$(readlink "$pd/$n")" = "$HUB/$n" ] || link_accept "$pd/$n" "$(readlink -f "$HUB/$n" 2>/dev/null)" "$REPO/plugins/$n"; }; then
         [ "$(readlink "$pd/$n")" = "$HUB/$n" ] \
           && ok "profile $pname/$n -> hub" \
           || ok "profile $pname/$n -> hub-equivalent (repoints needed)"
@@ -178,7 +181,7 @@ for pdir in "$HERMES_BASE"/profiles/*/; do
     if [ -L "$pd/$n" ]; then
       cur=$(readlink "$pd/$n")
       [ "$cur" = "$HUB/$n" ] && continue
-      if ! link_accept "$pd/$n" "$(readlink -f "$HUB/$n")"; then
+      if ! link_accept "$pd/$n" "$(readlink -f "$HUB/$n")" "$REPO/plugins/$n"; then
         fail "profile $pname/$n links to NON-HUB/NON-CHECKOUT path ($cur) — refuse"
         continue
       fi

@@ -114,3 +114,18 @@ def test_fail_closed_on_foreign_hub_entry(sandbox):
     assert r.returncode != 0
     assert "FAIL" in r.stdout + r.stderr
     assert foreign.exists()
+
+
+def test_profile_links_into_checkout_repointed_no_relocation(sandbox):
+    """Live nexa shape: relocation leg OFF, profiles linked straight into
+    the (unchanged) checkout — legal takeover, repointed to the hub."""
+    env, home, repo = sandbox
+    env = dict(env, PLUGIN_HUB_RELOCATE="0",
+               PLUGIN_HUB_REPO=str(repo), PLUGIN_HUB_DEST=str(repo))
+    r = _run(env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    prof = home / "profiles/alice/plugins"
+    for n in ("lcm2-pg", "mnemo-pg2"):
+        assert os.readlink(prof / n) == str(home / "plugins" / n), n
+    c = _run(env, "--check")
+    assert c.returncode == 0, c.stdout + c.stderr
