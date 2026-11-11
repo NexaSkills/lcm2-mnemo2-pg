@@ -88,6 +88,10 @@ link_accept(){
 # overwritten; a blind (unstopped) move never happens.
 unstow_pg(){
   local s=$1 canon=$2 PB refuse=""
+  if [ "${s%/}" = "${canon%/}" ]; then
+    ok "DB instance already at canonical path ($s) — nothing to unstow"
+    return 0
+  fi
   PB="$s/bin"; [ -x "$PB/pg_ctl" ] || PB="$HOME/lcm-pg/pg/bin"
   [ -n "${PLUGIN_HUB_NO_REAL_PGBIN:-}" ] && [ "$PB" = "$HOME/lcm-pg/pg/bin" ] && PB="none"
   if [ -e "$canon" ] && [ ! -d "$canon" ]; then
