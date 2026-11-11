@@ -59,11 +59,16 @@ fail(){ say "FAIL  $*"; fails=$((fails+1)); }
 # path — dangling-at-~/ops is the relocation artifact, dangling-at-a-vendor
 # dir stays a fail-closed vendor co-existence signal.
 link_accept(){
-  local link=$1 want=$2 raw res
+  local link=$1 want=$2 raw res p
   raw=$(readlink "$link"); res=$(readlink -f "$link")
   [ "$res" = "$want" ] && return 0
-  if [ -n "$raw" ] && [ ! -e "$res" ] && [ -n "$OLD_REPO" ]; then
-    case "$raw" in "$OLD_REPO"/*) return 0 ;; esac
+  if [ -n "$raw" ] && [ ! -e "$res" ]; then
+    # dangling-at-a-repo-path = takeover-legal (moved checkout OR a hub entry
+    # this run just retired); dangling anywhere else = vendor, refuse
+    for p in "$OLD_REPO" "$REPO" "$HUB"; do
+      [ -n "$p" ] || continue
+      case "$raw" in "$p"/*) return 0 ;; esac
+    done
   fi
   return 1
 }
@@ -141,6 +146,8 @@ fi
 for pdir in "$HERMES_BASE"/profiles/*/; do
   [ -d "$pdir" ] || continue
   pname=$(basename "$pdir")
+  # skip non-profile artifacts: nested 'profiles' dirs and hidden entries
+  case "$pname" in profiles|.*) continue ;; esac
   pd=$pdir/plugins
   if [ "$CHECK" = 1 ]; then
     [ -d "$pd" ] || { ok "profile $pname: no plugins dir (nothing to link)"; continue; }
