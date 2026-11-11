@@ -10,8 +10,11 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NO_PULL=0; SKIP_CHECK=0
 for a in "$@"; do case $a in
   --no-pull) NO_PULL=1;; --skip-check) SKIP_CHECK=1;;
-  *) echo "usage: update_mnemo_host.sh [--no-pull] [--skip-check]"; exit 2;;
+  *) echo "usage: update_mnemo_host.sh [--no-pull] [--skip-check] [--relocate]"; exit 2;;
 esac; done
+# --relocate: opt into the checkout relocation leg even without the
+# LCM2_SELF_CONTAINED=1 marker in root .env (fleet bootstrap one-off)
+for a in "$@"; do [ "$a" = "--relocate" ] && export PLUGIN_HUB_RELOCATE=1; done
 
 step() { printf '\n== %s ==\n' "$*"; }
 rc_total=0
@@ -24,6 +27,17 @@ fi
 
 step "instance watchdog"
 bash "$REPO_DIR/scripts/ensure_instance.sh" || rc_total=1
+
+# plugin-placement STANDARD (Jan 2026-11-11): real-dir hub at
+# ~/.hermes/plugins + profile symlinks into it; on self-contained hosts
+# (LCM2_SELF_CONTAINED=1 in root .env) the checkout itself moves under
+# ~/.hermes/checkout. Set PLUGIN_HUB_RELOCATE=0 here to pin the leg off.
+step "plugin hub"
+SC_ENV="$HOME/.hermes/.env"
+SC=0
+grep -q "^LCM2_SELF_CONTAINED=1" "$SC_ENV" 2>/dev/null && SC=1
+PLUGIN_HUB_RELOCATE="${PLUGIN_HUB_RELOCATE:-$SC}" \
+  bash "$REPO_DIR/scripts/plugin_hub.sh" || rc_total=1
 
 step "dbs/profiles"
 bash "$REPO_DIR/scripts/setup_dbs.sh" || rc_total=1

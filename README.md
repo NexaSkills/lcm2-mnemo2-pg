@@ -149,6 +149,28 @@ Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.
   `pg/log/` are gitignored (a disk-clone of a deployed host must not ship
   another host's databases or socket locks in the checkout).
 
+## Requirements — plugin placement standard (Jan, 2026-11-11)
+
+- **The hub is the only plugin surface.** Every plugin RESIDES in
+  `~/.hermes/plugins/<name>` as a REAL directory, materialised from the git
+  checkout by `plugin_hub.sh` (`rsync -c`, wired into
+  `update_mnemo_host.sh`). The checkout is the single write-source; the hub
+  copy is never hand-edited (`--check` diffs it content-wise and FAILs on
+  drift). Every profile (except the root/default surface, which reads the
+  hub directly) gets SYMLINKS `~/.hermes/profiles/<p>/plugins/<name> ->
+  ~/.hermes/plugins/<name>` — never links straight into a checkout.
+  Exception: `context_engine/lcm2-pg` stays a symlink into the checkout
+  (route-1 engine resolver loads exactly ONE code path; a materialised
+  second copy would violate the single-source invariant).
+- **Self-contained hosts keep everything under ~/.hermes.** With
+  `LCM2_SELF_CONTAINED=1` in the root `.env` (or one-off
+  `update_mnemo_host.sh --relocate`), the relocation leg moves the checkout
+  to `~/.hermes/checkout/lcm2-mnemo2-pg` (the DB instance under
+  `~/lcm2-mnemo2-pg/pg` lives OUTSIDE the checkout and is untouched).
+  Fail-closed everywhere: foreign hub entries, existing relocation
+  targets, and real-dir hub entries the script doesn't own are FAILs,
+  never silent overwrites. `check_mnemo.sh` (lane 8) reports the verdict.
+
 ## Requirements — postgres binaries
 
 The dedicated cluster reuses the Postgres binaries already installed by the

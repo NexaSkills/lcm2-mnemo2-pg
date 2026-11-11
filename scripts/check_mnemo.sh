@@ -101,6 +101,19 @@ else
     || warn "gateway boot drop-in missing on: $(echo $GWS | tr '\n' ' ') (apply_surface_fixes.sh)"
 fi
 
+# 8. plugin-placement STANDARD (Jan 2026-11-11): real-dir hub under
+# ~/.hermes/plugins, profile links via the hub, checkout under ~/.hermes
+# on self-contained hosts. Read-only verdict from plugin_hub.sh --check.
+SC=0; grep -q "^LCM2_SELF_CONTAINED=1" "$HOME/.hermes/.env" 2>/dev/null && SC=1
+if [ -x "$REPO_DIR/scripts/plugin_hub.sh" ] || [ -f "$REPO_DIR/scripts/plugin_hub.sh" ]; then
+  ph=$(PLUGIN_HUB_RELOCATE=$SC bash "$REPO_DIR/scripts/plugin_hub.sh" --check 2>&1); prc=$?
+  if [ "$prc" = 0 ]; then ok "plugin hub standard holds (plugin_hub --check)"
+  else
+    warn "plugin hub drift (run update_mnemo_host.sh):"
+    echo "$ph" | grep -E "^(FAIL|FIX)" | sed 's/^/      /'
+  fi
+fi
+
 echo "----"
 echo "check_mnemo: FAIL=$FAILS WARN=$WARNS"
 [ "$FAILS" = 0 ]
