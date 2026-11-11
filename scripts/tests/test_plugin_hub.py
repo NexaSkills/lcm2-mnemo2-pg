@@ -135,7 +135,7 @@ def test_pg_state_unstowed_with_checkout(sandbox):
     (co / "pg" / "bin" / "pg_ctl").write_text("#!/bin/sh\nexit 0\n")   # fake stop
     (co / "pg" / "bin" / "pg_ctl").chmod(0o755)
     env = dict(env, PLUGIN_HUB_REPO=str(co),
-               PLUGIN_HUB_PG_CANON=str(home / "lcm2-mnemo2-pg"),
+               PLUGIN_HUB_PG_CANON=str(home / "lcm2-mnemo2-pg" / "pg"),
                PLUGIN_HUB_OLD_REPO=str(repo),   # stale pre-relocation links
                PLUGIN_HUB_NO_REAL_PGBIN="1",
                PLUGIN_HUB_DEST=str(home / "checkout" / "lcm2-mnemo2-pg"))

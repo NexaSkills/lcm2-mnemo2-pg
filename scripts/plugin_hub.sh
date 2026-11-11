@@ -71,7 +71,7 @@ link_accept(){
   # the active checkout (incl. a relocation destination), any recorded
   # pre-relocation checkout path, or the hub itself (retired entries)
   if [ -n "$raw" ]; then
-    for p in "$REPO" $OLD_REPO "${OLD_REPOS[@]:-}" "$HUB"; do
+    for p in "$REPO" $OLD_REPO "${OLD_REPOS[@]:-}" "$HUB" "$HOME/$NAME"; do
       [ -n "$p" ] || continue
       case "$raw" in "$p"/*) return 0 ;; esac
     done
@@ -90,17 +90,17 @@ unstow_pg(){
   local s=$1 canon=$2 PB refuse=""
   PB="$s/bin"; [ -x "$PB/pg_ctl" ] || PB="$HOME/lcm-pg/pg/bin"
   [ -n "${PLUGIN_HUB_NO_REAL_PGBIN:-}" ] && [ "$PB" = "$HOME/lcm-pg/pg/bin" ] && PB="none"
-  if [ -e "$canon" ] && [ ! -d "$canon/pg" ]; then
-    refuse="canonical $canon exists without pg/ — inspect before unstow"
-  elif [ -f "$canon/pg/data/PG_VERSION" ]; then
-    refuse="two DB instances: $s AND $canon/pg (resolve manually)"
-  elif [ -d "$canon/pg" ]; then
+  if [ -e "$canon" ] && [ ! -d "$canon" ]; then
+    refuse="$canon exists but is not a dir — inspect before unstow"
+  elif [ -f "$canon/data/PG_VERSION" ]; then
+    refuse="two DB instances: $s AND $canon (resolve manually)"
+  elif [ -d "$canon" ]; then
     # watchdog-recreated empty skeleton (run/log/bin only) is OK to replace
-    if find "$canon/pg" -mindepth 1 -maxdepth 1 \
+    if find "$canon" -mindepth 1 -maxdepth 1 \
          ! -name run ! -name log ! -name bin | grep -q .; then
-      refuse="$canon/pg holds other content — refuse"
+      refuse="$canon holds other content — refuse"
     else
-      rm -rf "$canon/pg" && say "FIX   removed empty pg skeleton at $canon/pg"
+      rm -rf "$canon" && say "FIX   removed empty pg skeleton at $canon"
     fi
   fi
   [ -z "$refuse" ] && [ ! -x "$PB/pg_ctl" ] && refuse="no pg_ctl to stop $s — refuse to move blind"
@@ -109,16 +109,17 @@ unstow_pg(){
   if pgrep -f -- "-D $s/data" >/dev/null; then
     fail "postgres still running on $s/data — refuse to move"; return 1
   fi
-  mkdir -p "$canon"
-  if mv "$s" "$canon/pg"; then
-    say "FIX   DB instance unstowed $s -> $canon/pg (unit + DSN pins point there; restart the pg unit)"
+  mkdir -p "$(dirname "$canon")"
+  if mv "$s" "$canon"; then
+    say "FIX   DB instance unstowed $s -> $canon (unit + DSN pins point there; restart the pg unit)"
   else
-    fail "unstow mv $s -> $canon/pg"; return 1
+    fail "unstow mv $s -> $canon"; return 1
   fi
 }
 
-# canonical instance dir: env override > the pg UNIT's -D <dir>/data (the
-# ground truth the running system uses) > golden $HOME/<repo>/pg
+# canonical INSTANCE dir (the dir containing data/ run/ log/): env
+# override > the pg UNIT's -D <dir>/data stripped (the ground truth the
+# running system uses) > golden $HOME/<repo>/pg
 pg_canon(){
   local u
   [ -n "${PLUGIN_HUB_PG_CANON:-}" ] && { printf '%s' "$PLUGIN_HUB_PG_CANON"; return; }
@@ -126,7 +127,7 @@ pg_canon(){
         --property=ExecStart --value 2>/dev/null \
       | grep -o -- '-D [^ ;]*/data' | head -1 | sed 's/^-D //; s|/data$||')
   [ -n "$u" ] && { printf '%s' "$u"; return; }
-  printf '%s' "$HOME/$NAME"
+  printf '%s' "$HOME/$NAME/pg"
 }
 
 # ---------- 1. relocation leg (self-contained hosts) ----------
@@ -165,7 +166,7 @@ if [ "$RELOCATE" = 1 ] && [ "$REPO" != "$DEST" ]; then
     # DEST exists: one more trade-class case — a PREVIOUS relocation
     # already moved the checkout WITH its instance inside. Unstow in
     # place (same stop-verify-move discipline, no checkout move).
-    if [ -d "$DEST/pg/data" ] && [ ! -f "$HOME/$NAME/pg/data/PG_VERSION" ]; then
+    if [ -d "$DEST/pg/data" ] && [ ! -f "$(pg_canon)/data/PG_VERSION" ]; then
       unstow_pg "$DEST/pg" "$(pg_canon)"
     else
       fail "relocation target $DEST already exists (two checkouts? resolve manually, never force)"
