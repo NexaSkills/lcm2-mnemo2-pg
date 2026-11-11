@@ -284,7 +284,8 @@ for pdir in "$HERMES_BASE"/profiles/*/; do
     if [ -L "$pd/context_engine/lcm2-pg" ] || [ ! -e "$pd/context_engine/lcm2-pg" ]; then
       cur=$(readlink "$pd/context_engine/lcm2-pg" 2>/dev/null)
       if [ "$cur" = "$HUB/context_engine/lcm2-pg" ]; then :
-      elif [ -n "$cur" ] && [ "$(readlink -f "$pd/context_engine/lcm2-pg")" != "$(readlink -f "$ce_src")" ]; then
+      elif [ -n "$cur" ] && ! link_accept "$pd/context_engine/lcm2-pg" "$(readlink -f "$ce_src")" \
+           && [ "$(readlink -f "$pd/context_engine/lcm2-pg")" != "$(readlink -f "$ce_src")" ]; then
         fail "profile $pname/context_engine/lcm2-pg -> foreign ($cur) — refuse"
       else
         ln -sfn "$HUB/context_engine/lcm2-pg" "$pd/context_engine/lcm2-pg" \
