@@ -600,6 +600,21 @@ def _provider_dir_shim() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         lex = os.lstat(target)
         if not _stat.S_ISLNK(lex.st_mode):
+            # PLUGIN-HUB STANDARD (2026-11-11): a real dir here may be the
+            # plugin_hub.sh MATERIALISED COPY of our bridge (hub layout:
+            # plugins live physically under ~/.hermes/plugins). It is OURS
+            # iff its __init__.py is byte-identical to the bridge's —
+            # behaviour is then identical (activation loads the provider
+            # from the copy's SIBLING mnemo-pg2/, so a copy in the
+            # materialised plugins/ root is contract-equivalent). Anything
+            # else stays fail-closed legacy (quarantined below).
+            try:
+                same = (target / "__init__.py").read_bytes() == \
+                       (target_dir / "__init__.py").read_bytes()
+            except OSError:
+                same = False
+            if same:
+                return  # hub-materialised copy of OUR bridge: standard-conform
             # D-2 self-heal: a REAL DIR here is an old-install legacy
             # entry (the machine-side mnemo-pg deploy left exactly
             # this) and directory discovery resolves it BEFORE any
