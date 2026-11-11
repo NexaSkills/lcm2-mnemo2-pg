@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 scratch/
 pg/data/
+pg/data/
+pg/data.broken-system-pg/
+pg/run/
+pg/log/
