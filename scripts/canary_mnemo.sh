@@ -13,7 +13,10 @@
 # (agent rows are quarantined into metadata->>'canary' + soft-expired).
 set -uo pipefail
 PROF=${1:-}
-HC=(hermes); [ -n "$PROF" ] && HC=(hermes -p "$PROF")
+HC=(hermes -p default); [ -n "$PROF" ] && HC=(hermes -p "$PROF")
+# -p ALWAYS explicit: a bare `hermes` inherits HERMES_HOME from the
+# spawning shell (agent shells export their own profile home) and the
+# writes would silently land in that profile's bank, not default's
 AGENT=${PROF:-default}
 PSQL="$HOME/lcm-pg/pg/bin/psql -h $HOME/lcm2-mnemo2-pg/pg/run -p 54331 -U mnemo201 -d mnemo2db"
 SCHEMA="mnemo2_$AGENT"

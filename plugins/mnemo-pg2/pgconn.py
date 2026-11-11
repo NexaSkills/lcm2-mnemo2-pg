@@ -158,6 +158,33 @@ def _profile_name() -> str:
 _default_bank_warned: set[str] = set()
 
 
+def home_source() -> str:
+    """Which derivation fed the profile name behind the bank schema:
+    env-pin > host-funnel (contextvar-aware get_hermes_home) >
+    HERMES_HOME (CLI child inheritance — the class that silently routed
+    profile-scoped probes) > default-fallback."""
+    if _envget("MNEMO2_SCHEMA"):
+        return "env-pin"
+    try:
+        if getattr(__import__("hermes_constants"), "get_hermes_home", None):
+            return "host-funnel"
+    except Exception:
+        pass
+    return "HERMES_HOME" if _envget("HERMES_HOME") else "default-fallback"
+
+
+def _bank_log_reset() -> None:
+    """Test hook: re-arm the once-per-process bank-trace line."""
+    global _bank_logged
+    _bank_logged = False
+
+# bank-trace diagnostic (nexa 2026-11-11: profile-scoped CLI sessions
+# silently inherited the spawning shell's HERMES_HOME; the operator could
+# not see WHY a bank was chosen). Once per process: which derivation fed
+# the schema name. Attribution is computed stateless at log time.
+_bank_logged = False
+
+
 def _default_bank_warning_state() -> set:
     """Test hook: the live latch set (names already warned about)."""
     return _default_bank_warned
@@ -259,6 +286,12 @@ def agent_schema(explicit: str | None = None) -> str:
             except Exception:  # guard never breaks schema resolution
                 pass
         s = "mnemo2_" + re.sub(r"[^a-z0-9_]", "_", _profile_name().lower())
+    global _bank_logged
+    if not _bank_logged:
+        _bank_logged = True
+        logging.getLogger("mnemo-pg2").info(
+            "private bank=%s (home=%s via %s)", s, _live_home() or "<unset>",
+            home_source())
     if not _SCHEMA_RE.match(s):
         raise ValueError(f"invalid MNEMO2_SCHEMA {s!r}")
     return s
