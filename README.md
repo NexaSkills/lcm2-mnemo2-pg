@@ -114,6 +114,41 @@ tests-before-code, verification-before-assertion.
 
 Layout details: `docs/spec-phase1.md`. Per-phase specs: `docs/spec-phaseN.md`.
 
+## Requirements — python envs and DSN resolution (fleet incidents 2026-11-10)
+
+- **psycopg in EVERY loading env.** The plugins import `psycopg` (v3) and
+  `psycopg_pool` at load time; a missing wheel fails the lane silently
+  (`Memory provider ... loaded but no provider instance found` /
+  `Context engine ... not found — falling back to built-in compressor`)
+  or via the loader's 10s timeout lane (X-4 class: `hermes update` rebuilds
+  envs WITHOUT psycopg). Envs that must each carry it: every
+  `~/.hermes/tools/python-*/bin/python3` (the gateway's isolated launcher)
+  AND every `~/.hermes/installs/*/environments/*/venv/` — an env rebuild
+  mid-life silently re-breaks only ONE of them. `apply_surface_fixes.sh`
+  installs psycopg into all installed envs (idempotent); `check_mnemo.sh`
+  imports it in every env and FAILs on any miss. After any `hermes update`
+  on a fleet host, re-run `check_mnemo.sh` before trusting the lanes.
+- **Socket-only cluster → socket DSNs.** The dedicated cluster listens on
+  the unix socket in `<BASE>/pg/run` only (`listen_addresses=''`); a
+  TCP probe of `:54331` FAILS CLOSED against it. `default_dsn()` composes
+  `host=<BASE>/pg/run` from the golden defaults, but hosts running stale
+  checkouts (old `pgconn`) or odd homes can fall back to TCP and die with
+  the warnings above. Pin it explicitly in the root AND every profile
+  `.env`:
+  `LCM2_PG_DSN=postgresql:///lcm2db?host=<BASE>/pg/run&port=54331&user=mnemo201`
+  `MNEMO2_PG_DSN=postgresql:///mnemo2db?host=<BASE>/pg/run&port=54331&user=mnemo201`
+  `MNEMO2_SHARED_SCHEMA=shared`
+  (`onboard_profile.sh` writes these per profile; `update_mnemo_host.sh`
+  re-verifies).
+- **Self-healing.** `ensure_instance.sh` repairs the cluster + role,
+  `apply_surface_fixes.sh` repairs envs/params/drop-ins, and
+  `check_mnemo.sh` is the verdict: a rollout/update is DONE only when a
+  `check_mnemo: FAIL=0` line has been OBSERVED on the host (WARNs
+  advisory). All scripts are idempotent and safe to re-run.
+- **Repo pg dirs are runtime state, never source.** `pg/data*`, `pg/run/`,
+  `pg/log/` are gitignored (a disk-clone of a deployed host must not ship
+  another host's databases or socket locks in the checkout).
+
 ## Requirements — postgres binaries
 
 The dedicated cluster reuses the Postgres binaries already installed by the
