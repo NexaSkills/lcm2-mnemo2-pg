@@ -36,8 +36,21 @@ step "plugin hub"
 SC_ENV="$HOME/.hermes/.env"
 SC=0
 grep -q "^LCM2_SELF_CONTAINED=1" "$SC_ENV" 2>/dev/null && SC=1
-PLUGIN_HUB_RELOCATE="${PLUGIN_HUB_RELOCATE:-$SC}" \
-  bash "$REPO_DIR/scripts/plugin_hub.sh" || rc_total=1
+PHOUT=$(PLUGIN_HUB_RELOCATE="${PLUGIN_HUB_RELOCATE:-$SC}" \
+        bash "$REPO_DIR/scripts/plugin_hub.sh" 2>&1) || rc_total=1
+echo "$PHOUT"
+# if the relocation leg MOVED this very checkout, adopt the new path —
+# every later step resolves its scripts through REPO_DIR
+case "$PHOUT" in *"checkout relocated"*)
+  NEW="$HOME/.hermes/checkout/$(basename "$REPO_DIR")"
+  [ -d "$NEW/scripts" ] && { REPO_DIR="$NEW"; echo "NOTE  REPO_DIR -> $REPO_DIR"; } ;;
+esac
+# persistence: without the marker, a later run from the golden ~/ path
+# would flip the layout back — stamp it once relocation is in effect
+if [ "$(basename "$(dirname "$REPO_DIR")")" = ".hermes" ] && \
+   ! grep -q "^LCM2_SELF_CONTAINED=1" "$SC_ENV" 2>/dev/null; then
+  echo "LCM2_SELF_CONTAINED=1" >> "$SC_ENV" && echo "NOTE  LCM2_SELF_CONTAINED=1 stamped in $SC_ENV"
+fi
 
 step "dbs/profiles"
 bash "$REPO_DIR/scripts/setup_dbs.sh" || rc_total=1
