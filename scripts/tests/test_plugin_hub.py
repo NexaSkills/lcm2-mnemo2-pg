@@ -116,6 +116,40 @@ def test_fail_closed_on_foreign_hub_entry(sandbox):
     assert foreign.exists()
 
 
+def test_pg_state_unstowed_with_checkout(sandbox):
+    """mybuddy-trade class: co-located layout — the DB INSTANCE lived at
+    $HOME/<repo>/pg (gitignored state INSIDE the checkout dir). The
+    relocation leg must UNSTOW it to $HOME/<repo>/pg (canonical, where
+    the unit + DSN pins point), never drag it under ~/.hermes/checkout/.
+    Sandbox shape: repo at $FAKEHOME/lcm2-mnemo2-pg with pg/data inside
+    it (exactly the golden co-located layout)."""
+    env, home, repo = sandbox
+    co = home / "co" / "lcm2-mnemo2-pg"          # the co-located checkout
+    (co / "pg" / "data").mkdir(parents=True)
+    (co / "pg" / "data" / "PG_VERSION").write_text("18\n")
+    for p in ("plugins/lcm2-pg", "plugins/mnemo-pg2", "plugins/mnemosyne",
+              "plugins/context_engine/lcm2-pg"):
+        (co / p).mkdir(parents=True)
+    (co / "scripts").mkdir()
+    (co / "pg" / "bin").mkdir()
+    (co / "pg" / "bin" / "pg_ctl").write_text("#!/bin/sh\nexit 0\n")   # fake stop
+    (co / "pg" / "bin" / "pg_ctl").chmod(0o755)
+    env = dict(env, PLUGIN_HUB_REPO=str(co),
+               PLUGIN_HUB_PG_CANON=str(home / "lcm2-mnemo2-pg"),
+               PLUGIN_HUB_OLD_REPO=str(repo),   # stale pre-relocation links
+               PLUGIN_HUB_NO_REAL_PGBIN="1",
+               PLUGIN_HUB_DEST=str(home / "checkout" / "lcm2-mnemo2-pg"))
+    r = _run(env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "unstowed" in r.stdout.lower(), r.stdout
+    moved = home / "lcm2-mnemo2-pg" / "pg"       # canonical instance path
+    assert (moved / "data" / "PG_VERSION").is_file(), "instance not unstowed"
+    assert not (home / "checkout/lcm2-mnemo2-pg/pg/data").exists(), \
+        "live state dragged into the checkout placement"
+    c = _run(env, "--check")
+    assert c.returncode == 0, c.stdout + c.stderr
+
+
 def test_profile_links_into_checkout_repointed_no_relocation(sandbox):
     """Live nexa shape: relocation leg OFF, profiles linked straight into
     the (unchanged) checkout — legal takeover, repointed to the hub."""
