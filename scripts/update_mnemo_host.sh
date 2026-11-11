@@ -9,7 +9,7 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NO_PULL=0; SKIP_CHECK=0
 for a in "$@"; do case $a in
-  --no-pull) NO_PULL=1;; --skip-check) SKIP_CHECK=1;;
+  --no-pull) NO_PULL=1;; --skip-check) SKIP_CHECK=1;; --relocate) :;;
   *) echo "usage: update_mnemo_host.sh [--no-pull] [--skip-check] [--relocate]"; exit 2;;
 esac; done
 # --relocate: opt into the checkout relocation leg even without the
