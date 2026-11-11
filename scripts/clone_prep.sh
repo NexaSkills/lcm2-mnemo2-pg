@@ -62,6 +62,8 @@ BASE=${BASE:-$HOME/lcm2-mnemo2-pg/pg}
 PORT=${PORT:-54331}
 ROLE=${ROLE:-mnemo201}
 PGBIN=${PGBIN:-$HOME/lcm-pg/pg/bin}
+PY_DEFAULT=$(ls -d "$HOME"/.hermes/tools/python-*/bin/python3 2>/dev/null | head -1)
+PY=${PY:-${PY_DEFAULT:-python3}}
 # Deploy key: PUBLIC key material of the fleet admin (buddyos-nexa).
 # Verified fingerprint SHA256:TO5YSi0LzDK6ltqoqpAvrK00NlWOdMKa9IXe8TADgBM
 DEPLOY_KEY_PUB="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICvFafSAhZ7Qe2rMx3cqGT8OrClxGYV6QauWVOhBnhqB mybuddy@buddyos-nexa"
@@ -142,9 +144,16 @@ json.dump(d, open(p, "w"), indent=2)
 PYX
 }
 
-hash_password() { # password on stdin -> phc hash on stdout (core provider)
-  ( cd "$HERMES/hermes-agent" && "$PY" -c \
-      'import sys; from plugins.dashboard_auth.basic import hash_password; sys.stdout.write(hash_password(sys.stdin.buffer.readline().decode().rstrip("\n")))' )
+hash_password() { # password on stdin -> scrypt$n$r$p$salt$dk hash on stdout.
+  # Vendor-EQUIVALENT, deliberately NOT importing plugins.dashboard_auth.basic:
+  # that import chain pulls httpx (provider plumbing) and dies on launcher
+  # envs without it (template 2026-11-11). Constants mirror the vendor
+  # provider (scrypt N=2**14 r=8 p=1 dk=32 salt=16) so hashes verify.
+  "$PY" -c 'import sys,secrets,hashlib,base64
+pw=sys.stdin.buffer.readline().decode().rstrip("\n")
+salt=secrets.token_bytes(16)
+dk=hashlib.scrypt(pw.encode("utf-8"),salt=salt,n=2**14,r=8,p=1,dklen=32,maxmem=0)
+print("scrypt$16384$8$1$"+base64.b64encode(salt).decode()+"$"+base64.b64encode(dk).decode())'
 }
 
 # curl wrapper: secrets arrive on stdin as 'header = "..."' config lines so
@@ -431,6 +440,8 @@ self_test() {
   ck "grep -q 'OTHER=keep' $t"                        "env_set_key keeps others"
   ck "[ \"\$(stat -c %a $t)\" = 600 ]"                 "env_set_key chmod 600"
   rm -f "$t"
+  local h; h=$(printf 'test-pw-123\n' | hash_password)
+  ck "[[ \$h =~ ^scrypt\\\$16384\\\$8\\\$1\\\$[A-Za-z0-9+/=]+\\\$[A-Za-z0-9+/=]+\$ ]]" "hash shape (vendor scrypt format)"
   if [ "$fails" = 0 ]; then echo "SELFTEST OK"; else echo "SELFTEST FAIL ($fails)"; exit 1; fi
 }
 
