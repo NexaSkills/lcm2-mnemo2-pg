@@ -117,7 +117,7 @@ lit_api() { # lit_api METHOD PATH [json-body] -> body on stdout
 kev_probe() { # kev_probe <team-key> -> http code
   local key=$1
   if [ "$DRY" = 1 ]; then echo 000; return 0; fi
-  printf 'header = "Authorization: Bearer %s"\nurl = "%s/kev/systemone"\nsilent\nshow-error\nwrite-out = "%%{http_code}"\n' \
+  printf 'header = "Authorization: Bearer %s"\nurl = "%s/kev/systemone"\nsilent\nshow-error\noutput = "/dev/null"\nwrite-out = "%%{http_code}"\n' \
     "$key" "$LITELLM_URL" | curl -K - -X POST -H 'Content-Type: application/json' \
     -d '{"model":"kev","state":"Health probe. No task running.","questions":{"skill":{"type":"choice","instructions":"Which skill fits this task? Choose none if none apply.","criteria":{"github":"GitHub repo operations","none":"No skill applies."}}}}' 2>>"$LOGFILE"
 }

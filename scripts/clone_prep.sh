@@ -170,7 +170,7 @@ print("scrypt$16384$8$1$"+base64.b64encode(salt).decode()+"$"+base64.b64encode(d
 curl_stdin_header() { # curl_stdin_header <url> <header-line> [curl args...]
   local url=$1 hdr=$2; shift 2
   if [ "$DRY" = 1 ]; then log "DRY: curl $url [$hdr]"; echo 000; return 0; fi
-  printf 'header = "%s"\nurl = "%s"\nsilent\nshow-error\nwrite-out = "%%{http_code}"\n' \
+  printf 'header = "%s"\nurl = "%s"\nsilent\nshow-error\noutput = "/dev/null"\nwrite-out = "%%{http_code}"\n' \
     "$hdr" "$url" | curl -K - "$@" 2>>"$LOGFILE"
 }
 
