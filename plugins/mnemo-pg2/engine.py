@@ -1103,6 +1103,15 @@ class Engine:
                 "note": "sleep-time inference not wired (diagnostic read only)"}
 
     def task_progress(self, action="get", task="", state="", metadata=None) -> dict:
+        """Track task progress and status: action=set stores a task's
+        state, action=get reads one task by exact name, action=list shows
+        all tracked tasks, action=clear forgets one task. Use instead of
+        todo_list for cross-session task tracking."""
+        # Contract (P4 false-failure class, tutor 2026-11-12): ok:false is
+        # reserved for genuine misuse. A get on an unknown name is
+        # INFORMATION, not failure (ok:true, found:false + hint), so a
+        # miss never renders as a tool error and never invites blind
+        # name-guessing retries.
         cat = "task:progress"
         if action == "set":
             if not task:
@@ -1110,6 +1119,13 @@ class Engine:
             body = state or "unknown"
             r = self.remember_canonical(cat, task, body, source="task_progress")
             if metadata:
+                # metadata often arrives as a JSON STRING from the model;
+                # parse so the note is stored single-encoded, greppable.
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except ValueError:
+                        pass
                 self.remember(f"task_progress meta {task}: "
                              f"{json.dumps(metadata, default=str)}",
                              source="task_progress", scope="global")
@@ -1118,9 +1134,13 @@ class Engine:
             r = self.recall_canonical(category=cat, name=task or "")
             slots = r.get("slots", [])
             if action == "get" and task:
-                return {"ok": bool(slots), "task": task,
+                return {"ok": True, "found": bool(slots), "task": task,
                         "state": slots[0]["body"] if slots else None,
-                        "updated_at": slots[0]["created_at"] if slots else None}
+                        "updated_at": slots[0]["created_at"] if slots else None,
+                        **({} if slots else
+                           {"hint": "no task with this exact name; "
+                                    "action=list shows existing names; "
+                                    "action=set creates/updates"})}
             return {"ok": True, "tasks": [
                 {"task": s["name"], "state": s["body"],
                  "updated_at": s["created_at"]} for s in slots]}

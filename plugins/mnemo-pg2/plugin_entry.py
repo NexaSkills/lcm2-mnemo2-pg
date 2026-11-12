@@ -443,12 +443,22 @@ def register(ctx, engine_factory=None):
     except Exception:  # invalid env names: dispatch falls back to env path
         binding = {}
     for name in names:
-        handler = (lambda n: (lambda args=None, _b=binding, **kw:
-                              _dispatch(n, args if args is not None
-                                        else {**kw, "__binding__": _b})))(name)
+        def handler(args=None, _b=binding, _n=name, **kw):
+            if args is not None:
+                return _dispatch(_n, args)
+            # Write-fields-without-action recovery (P4 false-failure
+            # class, tutor 2026-11-12): the model omitted action while
+            # passing state=/metadata= — the Engine default made that a
+            # silent READ. Infer the write the caller clearly meant.
+            if "action" not in kw and (kw.get("state")
+                                       or kw.get("metadata")):
+                kw["action"] = "set"
+            return _dispatch(_n, {**kw, "__binding__": _b})
         ctx.register_tool(name=name, toolset=TOOLSET,
                           schema=_schema_for(name), handler=handler,
-                          description=f"mnemo-pg2 vendor-parity tool {name}")
+                          description=(
+                              _schema_for(name).get("description")
+                              or f"mnemo-pg2 vendor-parity tool {name}"))
 
     def _hook(fn):
         """Bind the agent's resolution into the hook kwargs (host passes
