@@ -296,6 +296,14 @@ p3() {
   [ -n "$fp" ] && gate repin PASS "new host key pinned" || gate repin FAIL "ssh after key regen failed"
   local hn; hn=$($SSH mybuddy@"$IP" hostname 2>/dev/null)
   [ "$hn" = "$HOST" ] && gate hostname PASS "remote hostname=$hn" || gate hostname FAIL "remote hostname=$hn"
+  # Standing fleet rule (Jan): ops hosts must resolve <name>.<edge-domain> to
+  # the edge via /etc/hosts — public DNS may lag or split-horizon.
+  local pubhost; pubhost=$(short_name "$HOST")."$EDGE_DOMAIN"
+  if grep -q "$pubhost" /etc/hosts; then gate hosts_pin PASS "$pubhost pinned"
+  elif printf '\n# buddyos clone %s (provisioning)\n%s\t%s\n' "$NAME" "$CADDY_HOST" "$pubhost" \
+       | sudo -n tee -a /etc/hosts >/dev/null 2>&1; then
+    gate hosts_pin PASS "$pubhost -> $CADDY_HOST added"
+  else gate hosts_pin WARN "could not pin $pubhost in nexa /etc/hosts"; fi
   local c; c=$(curl -s -o /dev/null -w '%{http_code}' "http://$IP:9120/")
   [ "$c" = 302 ] && gate dashboard PASS "http://$IP:9120/ -> 302" || gate dashboard FAIL "-> $c (expect 302)"
   local k; k=$(kev_probe "${TEAM_KEY:-}")
