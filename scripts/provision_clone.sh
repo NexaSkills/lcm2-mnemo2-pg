@@ -119,7 +119,7 @@ kev_probe() { # kev_probe <team-key> -> http code
   if [ "$DRY" = 1 ]; then echo 000; return 0; fi
   printf 'header = "Authorization: Bearer %s"\nurl = "%s/kev/systemone"\nsilent\nshow-error\nwrite-out = "%%{http_code}"\n' \
     "$key" "$LITELLM_URL" | curl -K - -X POST -H 'Content-Type: application/json' \
-    -d '{"probe":"provision-clone"}' 2>>"$LOGFILE"
+    -d '{"model":"kev","state":"Health probe. No task running.","questions":{"skill":{"type":"choice","instructions":"Which skill fits this task? Choose none if none apply.","criteria":{"github":"GitHub repo operations","none":"No skill applies."}}}}' 2>>"$LOGFILE"
 }
 
 # ---------- stages ----------
@@ -138,6 +138,20 @@ p0() {
     && gate ssh_first_contact PASS "BatchMode login as-is" \
     || { gate ssh_first_contact FAIL "cannot ssh the fresh clone — check template authorized_keys"; exit 1; }
   local cur; cur=$($SSH mybuddy@"$IP" hostname)
+  # snapshot restores can leave the clone clock minutes off — kev/TLS/DB
+  # timestamps all care. Report, and give timesync a shove.
+  local cs now skew
+  cs=$($SSH mybuddy@"$IP" date +%s); now=$(date +%s); skew=$(( now - cs ))
+  if [ "${skew#-}" -gt 30 ]; then
+    log "WARN: clone clock skew ${skew}s — nudging NTP"
+    $SSH mybuddy@"$IP" "sudo -n timedatectl set-ntp true >/dev/null 2>&1; sudo -n chronyc -a makestep >/dev/null 2>&1" || true
+    sleep 2
+    cs=$($SSH mybuddy@"$IP" date +%s); skew=$(( now - cs ))
+    [ "${skew#-}" -le 30 ] && gate clock PASS "skew ${skew}s after nudge" \
+                           || gate clock WARN "skew still ${skew}s (no NTP source on clone?)"
+  else
+    gate clock PASS "skew ${skew}s"
+  fi
   log "target: host=$HOST name=$NAME ip=$IP team=$TEAM key=$KALIAS user=$USER_ current-hostname=$cur"
 }
 
@@ -228,7 +242,7 @@ p2() {
                  || gate prep_run FAIL "clone_prep exit $rc"
 }
 
-p_caddy() {
+pcaddy() {
   log "== p2.5: caddy edge entry for $(public_url "$HOST") =="
   [ "$DRY" = 1 ] && { log "DRY: add caddy site block on $CADDY_HOST"; return 0; }
   $SSH "$CADDY_USER@$CADDY_HOST" true \
@@ -315,9 +329,10 @@ p4() {
 main() {
   log "clone-provision start (dry=$DRY) nexa=$(hostname)"
   local s
-  for s in 0 1 2 caddy 3 4; do
-    "p$s" || { log "stage p$s failed — aborting"; break; }
+  for s in 0 1 2 caddy 3; do
+    "p$s" || { log "stage p$s failed — skipping to ledger"; break; }
   done
+  p4   # ledger always: a FAILed run is exactly the entry you want on file
   local verdict=FAIL; [ "$FAIL_ANY" = 0 ] && verdict=PASS
   log "gates: ${GATES[*]:-none}"
   log "RESULT: $verdict"

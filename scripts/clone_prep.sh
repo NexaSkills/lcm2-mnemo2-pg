@@ -174,9 +174,15 @@ curl_stdin_header() { # curl_stdin_header <url> <header-line> [curl args...]
     "$hdr" "$url" | curl -K - "$@" 2>>"$LOGFILE"
 }
 
+# Typed-wire kev probe (schema from plugin kev_decide._walk, live-verified
+# 2026-11-12: {"model":"kev","state":"<str>","questions":{qid:{type,
+# instructions,criteria}}} -> 200 + answers). A body without state/questions
+# returns 400 FROM KEV ITSELF — which proves passthrough works, but we
+# assert on 200 only.
+KEV_PROBE_BODY='{"model":"kev","state":"Health probe. No task running.","questions":{"skill":{"type":"choice","instructions":"Which skill fits this task? Choose none if none apply.","criteria":{"github":"GitHub repo operations","none":"No skill applies."}}}}'
 probe_kev() { # -> http code of POST /kev/systemone with the team key
   curl_stdin_header "$LITELLM_URL/kev/systemone" "Authorization: Bearer $TEAM_KEY" -X POST \
-    -H 'Content-Type: application/json' -d '{"probe":"clone-prep"}'
+    -H 'Content-Type: application/json' -d "$KEV_PROBE_BODY"
 }
 
 # ---------- stages ----------
@@ -298,7 +304,9 @@ DECLARE r record;
 BEGIN
   FOR r IN SELECT schemaname, tablename FROM pg_tables
            WHERE schemaname ~ '^(lcm2_|mnemo2_|shared)' LOOP
-    EXECUTE format('TRUNCATE TABLE %I.%I', r.schemaname, r.tablename);
+    -- CASCADE: mnemo2/lcm2 tables carry FK refs; bare TRUNCATE fails on the
+    -- first FK-referenced table (e2e buddyos-jarvis 2026-11-12).
+    EXECUTE format('TRUNCATE TABLE %I.%I RESTART IDENTITY CASCADE', r.schemaname, r.tablename);
   END LOOP;
 END $$;
 SQL
