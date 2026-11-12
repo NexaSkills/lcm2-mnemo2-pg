@@ -135,11 +135,13 @@ p0() {
   NAME=$(short_name "$HOST"); USER_=$(user_name "$HOST"); KALIAS=$(key_alias "$HOST")
   TEAM=$NAME
   # A freshly restored snapshot regenerates host keys every run; drop any
-  # stale pin for this IP or BatchMode refuses the changed host key.
+  # stale pin for this IP or BatchMode refuses the changed host key. The
+  # connecting ssh must carry accept-new itself — after -R the key is
+  # UNKNOWN, and BatchMode+default checking cannot accept unknown keys.
   ssh-keygen -R "$IP" >/dev/null 2>&1
-  $SSH mybuddy@"$IP" true \
+  $SSH -o StrictHostKeyChecking=accept-new mybuddy@"$IP" true \
     && gate ssh_first_contact PASS "BatchMode login as-is" \
-    || { gate ssh_first_contact FAIL "cannot ssh the fresh clone — check template authorized_keys"; exit 1; }
+    || { gate ssh_first_contact FAIL "cannot ssh the fresh clone — check template authorized_keys"; return 1; }
   local cur; cur=$($SSH mybuddy@"$IP" hostname)
   # snapshot restores can leave the clone clock minutes off — kev/TLS/DB
   # timestamps all care. Report, and give timesync a shove.
