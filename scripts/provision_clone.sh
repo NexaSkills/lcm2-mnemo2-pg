@@ -134,6 +134,9 @@ p0() {
   [ -f "$HOME/.ssh/id_ed25519.pub" ] || { log "FAIL: no nexa deploy pubkey"; exit 2; }
   NAME=$(short_name "$HOST"); USER_=$(user_name "$HOST"); KALIAS=$(key_alias "$HOST")
   TEAM=$NAME
+  # A freshly restored snapshot regenerates host keys every run; drop any
+  # stale pin for this IP or BatchMode refuses the changed host key.
+  ssh-keygen -R "$IP" >/dev/null 2>&1
   $SSH mybuddy@"$IP" true \
     && gate ssh_first_contact PASS "BatchMode login as-is" \
     || { gate ssh_first_contact FAIL "cannot ssh the fresh clone — check template authorized_keys"; exit 1; }
