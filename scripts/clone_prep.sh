@@ -48,6 +48,12 @@
 #   --source-only      define functions and exit (test harness surface)
 #   --self-test        run pure-helper assertions and exit
 #   --skip-grant       do not touch LiteLLM (grant handled out-of-band)
+#   --noninteractive   no prompts: hostname/ip/web-user via flags; stdin
+#                      carries EXACTLY two lines: team key, then dashboard
+#                      password (piped by provision_clone.sh; never argv).
+#                      Grant must pre-exist orchestrator-side; stage 6
+#                      probe-only.
+#   --web-user=NAME    dashboard username (default: <short name>)
 #   --hostname=NAME    preset (still validated)
 #   --ip=ADDR          preset LAN IP (else default: current primary IPv4)
 #   --deploy-key-file=PATH   use this pubkey line instead of the built-in
@@ -74,6 +80,7 @@ BACKUP_DIR=$HERMES/backups/prep-$TS
 
 DRY=0; SOURCE_ONLY=0; SELFTEST=0; SKIP_GRANT=0; ONLY_STAGE=""
 PRESET_HOSTNAME=""; PRESET_IP=""
+NONINTER=0; WEB_USER_PRESET=""
 GATES=(); FAIL_ANY=0
 
 for arg in "$@"; do
@@ -82,6 +89,8 @@ for arg in "$@"; do
     --source-only) SOURCE_ONLY=1 ;;
     --self-test) SELFTEST=1 ;;
     --skip-grant) SKIP_GRANT=1 ;;
+    --noninteractive) NONINTER=1 ;;
+    --web-user=*) WEB_USER_PRESET=${arg#*=} ;;
     --hostname=*) PRESET_HOSTNAME=${arg#*=} ;;
     --ip=*) PRESET_IP=${arg#*=} ;;
     --deploy-key-file=*) DEPLOY_KEY_PUB=$(cat "${arg#*=}") ;;
@@ -161,13 +170,19 @@ print("scrypt$16384$8$1$"+base64.b64encode(salt).decode()+"$"+base64.b64encode(d
 curl_stdin_header() { # curl_stdin_header <url> <header-line> [curl args...]
   local url=$1 hdr=$2; shift 2
   if [ "$DRY" = 1 ]; then log "DRY: curl $url [$hdr]"; echo 000; return 0; fi
-  printf 'header = "%s"\nurl = "%s"\nsilent\nshow-error\nwrite-out = "%%{http_code}"\n' \
+  printf 'header = "%s"\nurl = "%s"\nsilent\nshow-error\noutput = "/dev/null"\nwrite-out = "%%{http_code}"\n' \
     "$hdr" "$url" | curl -K - "$@" 2>>"$LOGFILE"
 }
 
+# Typed-wire kev probe (schema from plugin kev_decide._walk, live-verified
+# 2026-11-12: {"model":"kev","state":"<str>","questions":{qid:{type,
+# instructions,criteria}}} -> 200 + answers). A body without state/questions
+# returns 400 FROM KEV ITSELF — which proves passthrough works, but we
+# assert on 200 only.
+KEV_PROBE_BODY='{"model":"kev","state":"Health probe. No task running.","questions":{"skill":{"type":"choice","instructions":"Which skill fits this task? Choose none if none apply.","criteria":{"github":"GitHub repo operations","none":"No skill applies."}}}}'
 probe_kev() { # -> http code of POST /kev/systemone with the team key
   curl_stdin_header "$LITELLM_URL/kev/systemone" "Authorization: Bearer $TEAM_KEY" -X POST \
-    -H 'Content-Type: application/json' -d '{"probe":"clone-prep"}'
+    -H 'Content-Type: application/json' -d "$KEV_PROBE_BODY"
 }
 
 # ---------- stages ----------
@@ -193,6 +208,23 @@ stage_0() {
 stage_1() {
   log "== stage 1: inputs =="
   HOST_NEW=$PRESET_HOSTNAME
+  if [ "$NONINTER" = 1 ]; then
+    # Provisioned by scripts/provision_clone.sh from buddyos-nexa.
+    # Contract: hostname/ip/user via flags; EXACTLY two secret lines on
+    # stdin (line 1 = LiteLLM team key, line 2 = dashboard password).
+    # The /kev grant must already exist (orchestrator-side) — stage 6
+    # probe only proves it.
+    validate_hostname "$HOST_NEW" || { log "FAIL: --noninteractive requires a valid --hostname"; exit 1; }
+    LAN_IP=$PRESET_IP
+    [ -n "$LAN_IP" ] || LAN_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
+    is_ipv4 "$LAN_IP" || { log "FAIL: not an IPv4: $LAN_IP"; exit 1; }
+    read -r TEAM_KEY || { log "FAIL: stdin closed before team key line"; exit 1; }
+    [ -n "$TEAM_KEY" ] || { log "FAIL: empty team key line"            ; exit 1; }
+    read -r P1       || { log "FAIL: stdin closed before password line"; exit 1; }
+    [ -n "$P1" ]      || { log "FAIL: empty password line"             ; exit 1; }
+    P2=$P1
+    MASTER_KEY=""
+  else
   while ! validate_hostname "$HOST_NEW"; do
     read -r -p "new hostname (must match buddyos-<name>): " HOST_NEW \
       || { log "FAIL: stdin closed before a valid hostname"; exit 1; }
@@ -216,7 +248,10 @@ stage_1() {
   if [ "$SKIP_GRANT" = 0 ]; then
     read -r -s -p "LiteLLM master key (memory-only, never written): " MASTER_KEY; echo
   else MASTER_KEY=""; fi
-  log "inputs: host=$HOST_NEW name=$NAME ip=$LAN_IP team=$TEAM key_alias=$KEY_ALIAS (secrets: held in memory only)"
+  fi
+  NAME=$(short_name "$HOST_NEW"); TEAM=$NAME; KEY_ALIAS=$(team_alias "$HOST_NEW")
+  WEB_USER=${WEB_USER_PRESET:-${WEB_USER:-$(short_name "$HOST_NEW")}}
+  log "inputs: host=$HOST_NEW name=$NAME ip=$LAN_IP team=$TEAM key_alias=$KEY_ALIAS web_user=$WEB_USER (secrets: held in memory only)"
 }
 
 stage_2() {
@@ -269,7 +304,9 @@ DECLARE r record;
 BEGIN
   FOR r IN SELECT schemaname, tablename FROM pg_tables
            WHERE schemaname ~ '^(lcm2_|mnemo2_|shared)' LOOP
-    EXECUTE format('TRUNCATE TABLE %I.%I', r.schemaname, r.tablename);
+    -- CASCADE: mnemo2/lcm2 tables carry FK refs; bare TRUNCATE fails on the
+    -- first FK-referenced table (e2e buddyos-jarvis 2026-11-12).
+    EXECUTE format('TRUNCATE TABLE %I.%I RESTART IDENTITY CASCADE', r.schemaname, r.tablename);
   END LOOP;
 END $$;
 SQL
