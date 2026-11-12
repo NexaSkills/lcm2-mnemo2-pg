@@ -17,6 +17,10 @@
 #                 scripts/clone_prep.sh over ssh to /tmp (700), run it
 #                 --noninteractive with the two secret lines on stdin,
 #                 shred the pushed copy.
+#   p2.5 caddy    append the <name>.nexaskills.co.za -> ip:9120 site block
+#                 on the edge host (backup -> validate -> restart, restore
+#                 on invalid — 0-caddy-admin.sh semantics). WARN-only gate
+#                 if the edge host is unreachable; IONOS DNS is Jan-side.
 #   p3 nexa-gates known_hosts for ip+hostname wiped and re-pinned via
 #                 keyscan+verify; ssh hostname matches; http://ip:9120/
 #                 -> 302 from nexa; /kev probe 200 with the new team key;
@@ -50,6 +54,14 @@ REPO_DIR=${REPO_DIR:-$HOME/Projects/lcm2-mnemo2-pg}
 LEDGER_FILE=${LEDGER_FILE:-$HOME/agent_workspace/fleet-clone-ledger.md}
 TEAM_MODELS=${TEAM_MODELS:-"main kev"}
 SECRETS_FILE=${SECRETS_FILE:-$HOME/.hermes/profiles/devon/secrets/clone-provision.env}
+# Edge (reverse proxy + LiteLLM host). Site-add follows 0-caddy-admin.sh's
+# edit flow semantics: timestamped backup -> append -> caddy validate ->
+# fix log ownership -> restart. DNS subdomain creation at IONOS is Jan-side
+# (gate reports it as an action item, never a silent FAIL).
+CADDY_HOST=${CADDY_HOST:-192.168.1.10}
+CADDY_USER=${CADDY_USER:-crpadmin}
+CADDYFILE_REMOTE=${CADDYFILE_REMOTE:-/etc/caddy/Caddyfile}
+EDGE_DOMAIN=${EDGE_DOMAIN:-nexaskills.co.za}
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=10"
 TS=$(date -u +%Y%m%d-%H%M%S)
 LOGFILE=$HOME/.hermes/logs/clone-provision-$TS.log
@@ -87,16 +99,18 @@ is_ipv4()      { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25
 public_url()   { printf 'https://%s.nexaskills.co.za' "$(short_name "$1")"; }  # buddyos-jarvis -> https://jarvis.nexaskills.co.za
 models_json()  { local m out="["; for m in $TEAM_MODELS; do out="$out\"$m\","; done; printf '%s]' "${out%,}"; }
 
-# curl via -K - on stdin: master key and bodies never appear in argv/ps.
+# curl via -K - on stdin: master key never appears in argv/ps. Bodies go as
+# `data =` config lines (this curl build rejects the `postfield` ALIAS in
+# config files — e2e 2026-11-12; data works and stays off argv).
 # Never logs any line containing a key value.
 lit_api() { # lit_api METHOD PATH [json-body] -> body on stdout
   local method=$1 path=$2 body=${3:-} esc
   if [ "$DRY" = 1 ] && [ "$method" != GET ]; then log "DRY: lit $method $path"; echo '{}'; return 0; fi
   esc=""
   [ -n "$body" ] && esc=$(printf '%s' "$body" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  { printf 'header = "Authorization: Bearer %s"\nurl = "%s%s"\nrequest = "%s"\nsilent\n' \
+  { printf 'header = "Authorization: Bearer %s"\nurl = "%s%s"\nrequest = "%s"\nsilent\nshow-error\n' \
       "$LITELLM_MASTER_KEY" "$LITELLM_URL" "$path" "$method"
-    [ -n "$esc" ] && printf 'postfield = "%s"\n' "$esc"
+    [ -n "$body" ] && printf 'header = "Content-Type: application/json"\ndata = "%s"\n' "$esc"
   } | curl -K - 2>>"$LOGFILE"
 }
 
@@ -193,6 +207,7 @@ print(d.get("key") or "" if isinstance(d,dict) else "")' 2>>"$LOGFILE")
 
 p2() {
   log "== p2: stream + run clone_prep on $HOST =="
+  if [ -z "${TEAM_KEY:-}" ]; then gate prep_run FAIL "no team key (p1 failed) — refusing remote run"; return 1; fi
   if [ "$SKIP_PULL" != 1 ] && [ "$DRY" != 1 ]; then
     git -C "$REPO_DIR" pull --ff-only >>"$LOGFILE" 2>&1 \
       || log "WARN: repo pull skipped/failed — running local HEAD"
@@ -213,6 +228,45 @@ p2() {
                  || gate prep_run FAIL "clone_prep exit $rc"
 }
 
+p_caddy() {
+  log "== p2.5: caddy edge entry for $(public_url "$HOST") =="
+  [ "$DRY" = 1 ] && { log "DRY: add caddy site block on $CADDY_HOST"; return 0; }
+  $SSH "$CADDY_USER@$CADDY_HOST" true \
+    || { gate caddy WARN "cannot ssh $CADDY_USER@$CADDY_HOST — public url not provisioned"; return 0; }
+  PUBHOST=$(short_name "$HOST")."$EDGE_DOMAIN"
+  if $SSH "$CADDY_USER@$CADDY_HOST" "grep -qE '^${PUBHOST}[[:space:]]*\{' $CADDYFILE_REMOTE"; then
+    gate caddy PASS "site $PUBHOST already present"; return 0
+  fi
+  local stamp; stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  $SSH "$CADDY_USER@$CADDY_HOST" "sudo -n cp -a $CADDYFILE_REMOTE $CADDYFILE_REMOTE.bak-$stamp" \
+    || { gate caddy FAIL "backup failed"; return 0; }
+  $SSH "$CADDY_USER@$CADDY_HOST" "sudo -n tee -a $CADDYFILE_REMOTE >/dev/null" <<EOF
+#===========================
+# $PUBHOST (added by provision_clone.sh $stamp)
+#===========================
+$PUBHOST {
+        reverse_proxy $IP:9120
+        log {
+                output file /var/log/caddy/${NAME}web.log {
+                       roll_size 20MiB
+                       roll_keep 5
+                       roll_keep_for 720h
+                }
+        }
+}
+EOF
+  if $SSH "$CADDY_USER@$CADDY_HOST" "sudo -n caddy validate --config $CADDYFILE_REMOTE --adapter caddyfile" >>"$LOGFILE" 2>&1; then
+    # fix log ownership exactly like 0-caddy-admin.sh, then restart (their edit flow)
+    $SSH "$CADDY_USER@$CADDY_HOST" "sudo -n chown -R caddy:caddy /var/log/caddy; sudo -n systemctl restart caddy" >>"$LOGFILE" 2>&1
+    sleep 3
+    gate caddy PASS "site $PUBHOST installed, caddy restarted"
+  else
+    $SSH "$CADDY_USER@$CADDY_HOST" "sudo -n cp -a $CADDYFILE_REMOTE.bak-$stamp $CADDYFILE_REMOTE" \
+      && gate caddy FAIL "Caddyfile invalid — restored from backup-$stamp (edge untouched)" \
+      || gate caddy FAIL "Caddyfile invalid AND restore failed — human on the caddy host NOW"
+  fi
+}
+
 p3() {
   log "== p3: nexa-side gates =="
   [ "$DRY" = 1 ] && { log "gates skipped in dry-run"; return 0; }
@@ -225,14 +279,20 @@ p3() {
   [ "$hn" = "$HOST" ] && gate hostname PASS "remote hostname=$hn" || gate hostname FAIL "remote hostname=$hn"
   local c; c=$(curl -s -o /dev/null -w '%{http_code}' "http://$IP:9120/")
   [ "$c" = 302 ] && gate dashboard PASS "http://$IP:9120/ -> 302" || gate dashboard FAIL "-> $c (expect 302)"
-  local k; k=$(kev_probe "$TEAM_KEY")
+  local k; k=$(kev_probe "${TEAM_KEY:-}")
   [ "$k" = 200 ] && gate kev_live PASS "probe 200 with $KALIAS" || gate kev_live FAIL "probe $k"
-  # public edge (DNS + reverse proxy are managed off-host): informational probe
-  local pc; pc=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$(public_url "$HOST")/" 2>/dev/null)
+  # public edge: DNS at IONOS is Jan-side; distinguish config vs DNS waits
+  local PUBHOST_EDGE; PUBHOST_EDGE=$(short_name "$HOST")."$EDGE_DOMAIN"
+  local pc; pc=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$PUBHOST_EDGE/" 2>/dev/null)
   case "$pc" in
-    302|200) gate public_url PASS "$(public_url "$HOST") -> $pc" ;;
-    000)     gate public_url WARN "$(public_url "$HOST") unreachable (DNS/proxy not live yet?)" ;;
-    *)       gate public_url WARN "$(public_url "$HOST") -> $pc (documented URL; verify edge routing)" ;;
+    302|200) gate public_url PASS "https://$PUBHOST_EDGE/ -> $pc" ;;
+    *)
+      local ec; ec=$($SSH "$CADDY_USER@$CADDY_HOST" "curl -sk -o /dev/null -m 10 -w '%{http_code}' --resolve $PUBHOST_EDGE:443:127.0.0.1 https://$PUBHOST_EDGE/" 2>/dev/null)
+      case "$ec" in
+        302|200) gate public_url WARN "edge OK ($ec) via $CADDY_HOST; ACTION: ask Jan to create IONOS subdomain $PUBHOST_EDGE" ;;
+        502|503|504) gate public_url WARN "edge routes but upstream down ($ec) — check clone webapp/ufw" ;;
+        *) gate public_url WARN "public url not live (local=$pc edge=$ec); needs IONOS subdomain $PUBHOST_EDGE + TLS" ;;
+      esac ;;
   esac
 }
 
@@ -255,7 +315,7 @@ p4() {
 main() {
   log "clone-provision start (dry=$DRY) nexa=$(hostname)"
   local s
-  for s in 0 1 2 3 4; do
+  for s in 0 1 2 caddy 3 4; do
     "p$s" || { log "stage p$s failed — aborting"; break; }
   done
   local verdict=FAIL; [ "$FAIL_ANY" = 0 ] && verdict=PASS
